@@ -102,53 +102,92 @@ static async Task<int> RunOcrDetectionAsync(Arguments args)
             return 2;
         }
 
-        // 3. OCR 识别
+        // 3. 第一次 OCR: 全窗口, 标准精度
+        OcrEngine.OcrResultData? firstResult = null;
         try
         {
-            Logger.Info($"正在执行 OCR 识别 (语言: {args.Language})...");
+            Logger.Info($"正在执行第一次 OCR (全窗口, 语言: {args.Language})...");
             var sw = Stopwatch.StartNew();
-            var ocrText = await OcrEngine.RecognizeAsync(screenshot, args.Language);
+            firstResult = await OcrEngine.RecognizeWithWordsAsync(screenshot, args.Language, upscale: 4);
             sw.Stop();
-            Logger.Info($"OCR 完成, 耗时 {sw.ElapsedMilliseconds}ms, 识别到 {ocrText.Length} 个字符");
+            Logger.Info($"第一次 OCR 完成, 耗时 {sw.ElapsedMilliseconds}ms, 识别到 {firstResult.Text.Length} 个字符");
 
-            if (string.IsNullOrWhiteSpace(ocrText))
-            {
+            if (!string.IsNullOrWhiteSpace(firstResult.Text))
+                Logger.Debug($"第一次 OCR 原文:\n--- OCR 开始 ---\n{firstResult.Text}\n--- OCR 结束 ---");
+            else
                 Logger.Warn("OCR 结果为空（可能窗口内容为纯图像或无文字）");
-            }
-            else
-            {
-                Logger.Debug($"OCR 原文:\n--- OCR 开始 ---\n{ocrText}\n--- OCR 结束 ---");
-            }
-
-            // 4. 搜索文本
-            var found = SearchText(ocrText, args.SearchText, args.CaseSensitive);
-            if (found)
-            {
-                Logger.Info($"✅ 文本搜索成功: 找到匹配 \"{args.SearchText}\"");
-                return 0;
-            }
-            else
-            {
-                Logger.Warn($"❌ 文本未找到: \"{args.SearchText}\" 不在 OCR 结果中");
-            }
         }
         catch (Exception ex)
         {
-            Logger.Error($"OCR 识别失败: {ex.Message}");
+            Logger.Error($"第一次 OCR 失败: {ex.Message}");
+            Logger.Debug($"OCR 异常堆栈: {ex}");
+            screenshot.Dispose();
+            return 2;
+        }
+
+        // 4. 搜索文本并定位坐标
+        if (firstResult == null || string.IsNullOrWhiteSpace(firstResult.Text))
+        {
+            screenshot.Dispose();
+            if (attempt < args.Retry) { Logger.Info($"等待 {args.RetryInterval}ms 后重试..."); await Task.Delay(args.RetryInterval); continue; }
+            Logger.Error("已达到最大重试次数, 文本未找到");
+            return 3;
+        }
+
+        var matchRect = OcrEngine.FindTextRect(firstResult.Words, args.SearchText, args.CaseSensitive);
+        if (matchRect == null)
+        {
+            Logger.Warn($"❌ 文本未找到: \"{args.SearchText}\" 不在 OCR 结果中");
+            screenshot.Dispose();
+            if (attempt < args.Retry) { Logger.Info($"等待 {args.RetryInterval}ms 后重试..."); await Task.Delay(args.RetryInterval); continue; }
+            Logger.Error("已达到最大重试次数, 文本未找到");
+            return 3;
+        }
+
+        Logger.Info($"✅ 文本搜索成功: 找到匹配 \"{args.SearchText}\"");
+        Logger.Info($"匹配文本坐标 (原始): ({matchRect.Value.X}, {matchRect.Value.Y}), 尺寸: {matchRect.Value.Width}x{matchRect.Value.Height}");
+
+        // 5. 裁剪区域: 从匹配文本左上角 → 窗口右下角
+        var cropRect = new Rectangle(
+            matchRect.Value.X,
+            matchRect.Value.Y,
+            screenshot.Width - matchRect.Value.X,
+            screenshot.Height - matchRect.Value.Y);
+        Logger.Info($"二次 OCR 裁剪矩形: ({cropRect.X}, {cropRect.Y}) → ({cropRect.X + cropRect.Width}, {cropRect.Y + cropRect.Height}), 尺寸: {cropRect.Width}x{cropRect.Height}");
+
+        if (args.SaveScreenshot)
+        {
+            using var cropCopy = screenshot.Clone(cropRect, screenshot.PixelFormat);
+            var path = ScreenCapture.SaveScreenshot(cropCopy, args.WindowTitle + "_crop", attempt);
+            Logger.Info($"裁剪截图已保存: {path}");
+        }
+
+        // 6. 第二次 OCR: 裁剪区域, 更高精度
+        try
+        {
+            using var croppedBitmap = screenshot.Clone(cropRect, screenshot.PixelFormat);
+            screenshot.Dispose();
+
+            Logger.Info($"正在执行第二次 OCR (裁剪区域, 高精度, 语言: {args.Language})...");
+            var sw = Stopwatch.StartNew();
+            var detailedResult = await OcrEngine.RecognizeWithWordsAsync(croppedBitmap, args.Language, upscale: 8);
+            sw.Stop();
+            Logger.Info($"第二次 OCR 完成, 耗时 {sw.ElapsedMilliseconds}ms, 识别到 {detailedResult.Text.Length} 个字符");
+
+            if (!string.IsNullOrWhiteSpace(detailedResult.Text))
+                Logger.Info($"第二次 OCR 结果:\n--- 二次 OCR 开始 ---\n{detailedResult.Text}--- 二次 OCR 结束 ---");
+            else
+                Logger.Warn("第二次 OCR 结果为空");
+
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"第二次 OCR 失败: {ex.Message}");
             Logger.Debug($"OCR 异常堆栈: {ex}");
             return 2;
         }
-        finally
-        {
-            screenshot.Dispose();
-        }
 
-        // 未找到, 等待后重试
-        if (attempt < args.Retry)
-        {
-            Logger.Info($"等待 {args.RetryInterval}ms 后重试...");
-            await Task.Delay(args.RetryInterval);
-        }
     }
 
     Logger.Error("已达到最大重试次数, 文本未找到");
@@ -159,64 +198,6 @@ static async Task<int> RunOcrDetectionAsync(Arguments args)
 // 文本搜索
 // ═══════════════════════════════════════════════════════════
 
-/// <summary>
-/// 在 OCR 结果中搜索目标文本。
-/// 自动归一化 CJK 字符之间的空格（OCR 常把"运行日志"识别为"运 行 日 志"）。
-/// </summary>
-static bool SearchText(string source, string search, bool caseSensitive)
-{
-    var comparison = caseSensitive
-        ? StringComparison.Ordinal
-        : StringComparison.OrdinalIgnoreCase;
-
-    // 归一化：去掉 CJK 字符之间的多余空格
-    var normalizedSource = NormalizeCjkSpaces(source);
-    var normalizedSearch = NormalizeCjkSpaces(search);
-
-    return normalizedSource.Contains(normalizedSearch, comparison);
-}
-
-/// <summary>
-/// 移除 CJK 字符之间的空格，但保留拉丁字母/数字之间的空格。
-/// "运 行 日 志" → "运行日志", "Hello World" → "Hello World"
-/// </summary>
-static string NormalizeCjkSpaces(string text)
-{
-    if (string.IsNullOrEmpty(text)) return text;
-
-    var sb = new StringBuilder(text.Length);
-    for (int i = 0; i < text.Length; i++)
-    {
-        char c = text[i];
-        if (c == ' ' || c == ' ')
-        {
-            // 只有当空格两侧都是 CJK/标点时才跳过
-            bool prevCjk = i > 0 && IsCjkOrPunct(text[i - 1]);
-            bool nextCjk = i < text.Length - 1 && IsCjkOrPunct(text[i + 1]);
-            if (prevCjk || nextCjk)
-                continue;
-        }
-        sb.Append(c);
-    }
-    return sb.ToString();
-}
-
-/// <summary>判断字符是否为 CJK 字符或中文标点</summary>
-static bool IsCjkOrPunct(char c)
-{
-    return (c >= 0x4E00 && c <= 0x9FFF)   // CJK 统一汉字
-        || (c >= 0x3400 && c <= 0x4DBF)   // CJK 扩展 A
-        || (c >= 0x20000 && c <= 0x2A6DF) // CJK 扩展 B
-        || (c >= 0x3000 && c <= 0x303F)   // CJK 标点
-        || (c >= 0xFF00 && c <= 0xFFEF)   // 全角字符
-        || (c >= 0x2F00 && c <= 0x2FDF)   // 康熙部首
-        || (c >= 0x31C0 && c <= 0x31EF)   // CJK 笔画
-        || (c >= 0xFE30 && c <= 0xFE4F)   // CJK 兼容形式
-        || (c >= 0x3000 && c <= 0x301F)   // CJK 标点
-        || c == '．' || c == '：' || c == '，' || c == '。'  // 全角标点
-        || c == '／' || c == '（' || c == '）' || c == '［'
-        || c == '］' || c == '｛' || c == '｝';
-}
 
 // ═══════════════════════════════════════════════════════════
 // 配置加载 / 交互式输入
@@ -855,65 +836,210 @@ static class ScreenCapture
 
 static class OcrEngine
 {
-    /// <summary>
-    /// 对 Bitmap 执行 OCR 识别，返回识别的文本
-    /// </summary>
-    public static async Task<string> RecognizeAsync(Bitmap bitmap, string languageTag)
-    {
-        // Step 1: 图像预处理 —— 放大 + 增强，提升 OCR 识别率（对中文尤其重要）
-        using var processed = PreprocessForOcr(bitmap);
-        Logger.Debug($"图像预处理: {bitmap.Width}x{bitmap.Height} → {processed.Width}x{processed.Height}");
+    // ── 数据类型 ──
 
-        // Step 2: 将 Bitmap 转换为 SoftwareBitmap
+    /// <summary>OCR 单词信息（坐标已映射回原始 bitmap 空间）</summary>
+    public class OcrWordInfo
+    {
+        public string Text { get; set; } = "";
+        public int X { get; set; }
+        public int Y { get; set; }
+        public int Width { get; set; }
+        public int Height { get; set; }
+    }
+
+    /// <summary>OCR 识别结果：文本 + 单词坐标</summary>
+    public class OcrResultData
+    {
+        public string Text { get; set; } = "";
+        public List<OcrWordInfo> Words { get; set; } = new();
+    }
+
+    // ── 公开方法 ──
+
+    /// <summary>
+    /// 执行 OCR 识别，返回文本 + 单词坐标（坐标已映射到原始图像空间）
+    /// </summary>
+    public static async Task<OcrResultData> RecognizeWithWordsAsync(Bitmap bitmap, string languageTag, int upscale)
+    {
+        // Step 1: 图像预处理 —— 放大提升识别率
+        using var processed = PreprocessForOcr(bitmap, upscale);
+        Logger.Debug($"图像预处理 ({upscale}x): {bitmap.Width}x{bitmap.Height} → {processed.Width}x{processed.Height}");
+
+        // Step 2: 转换为 SoftwareBitmap
         using var softwareBitmap = await ConvertToSoftwareBitmapAsync(processed);
 
-        // Step 3: 获取指定语言的 OCR 引擎
-        Windows.Media.Ocr.OcrEngine? engine;
-        var requestedLanguage = new Language(languageTag);
-        if (Windows.Media.Ocr.OcrEngine.TryCreateFromLanguage(requestedLanguage) is { } matchedEngine)
-        {
-            engine = matchedEngine;
-            Logger.Debug($"使用 OCR 语言: {languageTag}");
-        }
-        else
-        {
-            var availableLanguages = Windows.Media.Ocr.OcrEngine.AvailableRecognizerLanguages;
-            if (availableLanguages.Count == 0)
-                throw new NotSupportedException("系统没有可用的 OCR 语言包");
+        // Step 3: 获取 OCR 引擎
+        var engine = GetEngine(languageTag);
 
-            var fallbackLang = availableLanguages[0];
-            engine = Windows.Media.Ocr.OcrEngine.TryCreateFromLanguage(fallbackLang);
-            if (engine == null)
-                throw new NotSupportedException($"无法创建 OCR 引擎（语言: {fallbackLang.DisplayName}）");
-
-            Logger.Warn($"不支持语言 \"{languageTag}\", 已回退到: {fallbackLang.DisplayName} ({fallbackLang.LanguageTag})");
-        }
-
-        // Step 4: 执行 OCR 识别
+        // Step 4: 执行 OCR
         var result = await engine.RecognizeAsync(softwareBitmap);
 
-        // Step 5: 拼接识别文本（按行）
+        // Step 5: 提取文本 + 单词坐标（映射回原始空间）
         var sb = new StringBuilder();
+        var words = new List<OcrWordInfo>();
+
         foreach (var line in result.Lines)
         {
             sb.AppendLine(line.Text);
+            foreach (var word in line.Words)
+            {
+                var rect = word.BoundingRect;
+                words.Add(new OcrWordInfo
+                {
+                    Text = word.Text,
+                    X = (int)rect.X / upscale,
+                    Y = (int)rect.Y / upscale,
+                    Width = (int)rect.Width / upscale,
+                    Height = (int)rect.Height / upscale
+                });
+            }
         }
 
-        return sb.ToString().TrimEnd();
+        return new OcrResultData { Text = sb.ToString().TrimEnd(), Words = words };
     }
 
     /// <summary>
-    /// OCR 预处理：3x 放大
-    /// 中文等 CJK 字符结构复杂，需要充足像素才能被准确识别
+    /// 在 OCR 单词列表中查找目标文本，返回匹配区域（原始图像坐标）
     /// </summary>
-    private static Bitmap PreprocessForOcr(Bitmap source)
+    public static Rectangle? FindTextRect(List<OcrWordInfo> words, string searchText, bool caseSensitive)
     {
-        int newW = source.Width * 3;
-        int newH = source.Height * 3;
+        if (words.Count == 0 || string.IsNullOrWhiteSpace(searchText))
+            return null;
 
+        var comparison = caseSensitive
+            ? StringComparison.Ordinal
+            : StringComparison.OrdinalIgnoreCase;
+
+        var normalizedSearch = NormalizeCjkSpaces(searchText);
+
+        // 将所有单词的归一化文本拼接，记录每个字符对应的原始单词索引
+        var flatWords = new List<(int wordIdx, string text)>();
+        for (int i = 0; i < words.Count; i++)
+        {
+            var norm = NormalizeCjkSpaces(words[i].Text);
+            if (!string.IsNullOrEmpty(norm))
+                flatWords.Add((i, norm));
+        }
+
+        // 构建完整归一化文本用于搜索
+        var fullNorm = string.Concat(flatWords.Select(w => w.text));
+        var matchIdx = fullNorm.IndexOf(normalizedSearch, comparison);
+        if (matchIdx < 0) return null;
+
+        // 定位匹配涉及哪些单词
+        int matchEnd = matchIdx + normalizedSearch.Length;
+        int runningPos = 0;
+        int? firstWordIdx = null;
+        int? lastWordIdx = null;
+
+        foreach (var (wordIdx, wText) in flatWords)
+        {
+            int wordStart = runningPos;
+            int wordEnd = runningPos + wText.Length;
+            runningPos = wordEnd;
+
+            if (wordStart < matchEnd && wordEnd > matchIdx)
+            {
+                firstWordIdx ??= wordIdx;
+                lastWordIdx = wordIdx;
+            }
+        }
+
+        if (firstWordIdx == null || lastWordIdx == null) return null;
+
+        // 计算联合矩形: 左上角 = 第一个匹配单词的左上角
+        var first = words[firstWordIdx.Value];
+        var last = words[lastWordIdx.Value];
+        int x = first.X;
+        int y = first.Y;
+        int right = Math.Max(first.X + first.Width, last.X + last.Width);
+        int bottom = Math.Max(first.Y + first.Height, last.Y + last.Height);
+
+        return new Rectangle(x, y, right - x, bottom - y);
+    }
+
+    // ── 内部方法 ──
+
+    private static Windows.Media.Ocr.OcrEngine GetEngine(string languageTag)
+    {
+        var requestedLanguage = new Language(languageTag);
+        if (Windows.Media.Ocr.OcrEngine.TryCreateFromLanguage(requestedLanguage) is { } engine)
+        {
+            Logger.Debug($"使用 OCR 语言: {languageTag}");
+            return engine;
+        }
+
+        var available = Windows.Media.Ocr.OcrEngine.AvailableRecognizerLanguages;
+        if (available.Count == 0)
+            throw new NotSupportedException("系统没有可用的 OCR 语言包");
+
+        var fallback = available[0];
+        var fallbackEngine = Windows.Media.Ocr.OcrEngine.TryCreateFromLanguage(fallback);
+        if (fallbackEngine == null)
+            throw new NotSupportedException($"无法创建 OCR 引擎（语言: {fallback.DisplayName}）");
+
+        Logger.Warn($"不支持语言 \"{languageTag}\", 已回退到: {fallback.DisplayName} ({fallback.LanguageTag})");
+        return fallbackEngine;
+    }
+
+    /// <summary>
+    /// 移除 CJK 字符之间的空格。
+    /// "运 行 日 志" → "运行日志", "Hello World" → "Hello World"
+    /// </summary>
+    public static string NormalizeCjkSpaces(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return text;
+        var sb = new StringBuilder(text.Length);
+        for (int i = 0; i < text.Length; i++)
+        {
+            char c = text[i];
+            if (c == ' ' || c == ' ')
+            {
+                bool prevCjk = i > 0 && IsCjkOrPunct(text[i - 1]);
+                bool nextCjk = i < text.Length - 1 && IsCjkOrPunct(text[i + 1]);
+                if (prevCjk || nextCjk) continue;
+            }
+            sb.Append(c);
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>判断字符是否为 CJK 字符或中文标点</summary>
+    public static bool IsCjkOrPunct(char c)
+    {
+        return (c >= 0x4E00 && c <= 0x9FFF)
+            || (c >= 0x3400 && c <= 0x4DBF)
+            || (c >= 0x20000 && c <= 0x2A6DF)
+            || (c >= 0x3000 && c <= 0x303F)
+            || (c >= 0xFF00 && c <= 0xFFEF)
+            || (c >= 0x2F00 && c <= 0x2FDF)
+            || (c >= 0x31C0 && c <= 0x31EF)
+            || (c >= 0xFE30 && c <= 0xFE4F)
+            || (c >= 0x3000 && c <= 0x301F)
+            || c == '．' || c == '：' || c == '，' || c == '。'
+            || c == '／' || c == '（' || c == '）' || c == '［'
+            || c == '］' || c == '｛' || c == '｝';
+    }
+
+    // ── 调试用计数器 ──
+    private static int _debugSeq;
+
+    /// <summary>
+    /// OCR 预处理：放大 → 灰度化 → 对比度增强
+    /// 每步输出调试截图到 screenshots/debug/
+    /// </summary>
+    private static Bitmap PreprocessForOcr(Bitmap source, int upscale)
+    {
+        int newW = source.Width * upscale;
+        int newH = source.Height * upscale;
+        var debugDir = EnsureDebugDir();
+
+        // 保存原始截图
+        SaveDebugImage(source, debugDir, "01_original");
+
+        // 1. 高质量放大
         var scaled = new Bitmap(newW, newH, PixelFormat.Format32bppArgb);
-
-        // 高质量双三次插值放大
         using (var g = Graphics.FromImage(scaled))
         {
             g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
@@ -922,8 +1048,162 @@ static class OcrEngine
             g.CompositingQuality = System.Drawing.Drawing2D.CompositingQuality.HighQuality;
             g.DrawImage(source, new Rectangle(0, 0, newW, newH));
         }
+        SaveDebugImage(scaled, debugDir, "02_scaled");
 
-        return scaled;
+        // 2. 灰度化 (ColorMatrix)
+        var gray = new Bitmap(newW, newH, PixelFormat.Format32bppArgb);
+        using (var g = Graphics.FromImage(gray))
+        {
+            var grayMatrix = new ColorMatrix(new float[][] {
+                new float[] { 0.299f, 0.299f, 0.299f, 0, 0 },
+                new float[] { 0.587f, 0.587f, 0.587f, 0, 0 },
+                new float[] { 0.114f, 0.114f, 0.114f, 0, 0 },
+                new float[] { 0,      0,      0,      1, 0 },
+                new float[] { 0,      0,      0,      0, 1 }
+            });
+            using var attr = new ImageAttributes();
+            attr.SetColorMatrix(grayMatrix);
+            g.DrawImage(scaled, new Rectangle(0, 0, newW, newH),
+                0, 0, newW, newH, GraphicsUnit.Pixel, attr);
+        }
+        scaled.Dispose();
+        SaveDebugImage(gray, debugDir, "03_grayscale");
+
+        // 3. 对比度增强 (ColorMatrix: contrast 3.5x, 强拉对比)
+        var contrast = 3.5f;
+        var translate = (1.0f - contrast) * 0.5f;
+        var contrasted = new Bitmap(newW, newH, PixelFormat.Format32bppArgb);
+        using (var g = Graphics.FromImage(contrasted))
+        {
+            var contrastMatrix = new ColorMatrix(new float[][] {
+                new float[] { contrast, 0,        0,        0, 0 },
+                new float[] { 0,        contrast, 0,        0, 0 },
+                new float[] { 0,        0,        contrast, 0, 0 },
+                new float[] { 0,        0,        0,        1, 0 },
+                new float[] { translate, translate, translate, 0, 1 }
+            });
+            using var attr = new ImageAttributes();
+            attr.SetColorMatrix(contrastMatrix);
+            g.DrawImage(gray, new Rectangle(0, 0, newW, newH),
+                0, 0, newW, newH, GraphicsUnit.Pixel, attr);
+        }
+        gray.Dispose();
+        SaveDebugImage(contrasted, debugDir, "04_contrast");
+
+        // 4. Otsu 自适应阈值二值化：纯黑文字 + 纯白背景
+        var binary = ApplyOtsuBinarization(contrasted);
+        contrasted.Dispose();
+        SaveDebugImage(binary, debugDir, "05_binary");
+
+        return binary;
+    }
+
+    /// <summary>
+    /// Otsu 自适应阈值二值化：纯黑(0)文字 + 纯白(255)背景
+    /// 低对比度文字经过此处理后 OCR 识别率大幅提升
+    /// </summary>
+    private static Bitmap ApplyOtsuBinarization(Bitmap source)
+    {
+        int w = source.Width, h = source.Height;
+        var result = new Bitmap(w, h, PixelFormat.Format32bppArgb);
+
+        // 1. 收集灰度直方图（用安全托管方式）
+        var srcData = source.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        int stride = srcData.Stride;
+        int bytes = Math.Abs(stride) * h;
+        var pixels = new byte[bytes];
+        Marshal.Copy(srcData.Scan0, pixels, 0, bytes);
+        source.UnlockBits(srcData);
+
+        int[] hist = new int[256];
+        var grayValues = new byte[w * h]; // 每像素的灰度值
+
+        for (int y = 0; y < h; y++)
+        {
+            int rowOff = y * stride;
+            for (int x = 0; x < w; x++)
+            {
+                int px = rowOff + x * 4;
+                // BGRA: pixels[px]=B, pixels[px+1]=G, pixels[px+2]=R
+                byte gray = (byte)(pixels[px + 2] * 0.299 + pixels[px + 1] * 0.587 + pixels[px] * 0.114);
+                grayValues[y * w + x] = gray;
+                hist[gray]++;
+            }
+        }
+
+        // 2. Otsu 算法: 找最优阈值
+        int total = w * h;
+        int sumAll = 0;
+        for (int i = 0; i < 256; i++) sumAll += i * hist[i];
+
+        int threshold = 128;
+        float maxVariance = 0;
+        int weightBg = 0;
+        long sumBg = 0;
+
+        for (int t = 0; t < 256; t++)
+        {
+            weightBg += hist[t];
+            if (weightBg == 0 || weightBg == total) continue;
+
+            sumBg += (long)t * hist[t];
+            int weightFg = total - weightBg;
+            long sumFg = sumAll - sumBg;
+
+            float meanBg = (float)sumBg / weightBg;
+            float meanFg = (float)sumFg / weightFg;
+            float variance = weightBg * weightFg * (meanBg - meanFg) * (meanBg - meanFg);
+
+            if (variance > maxVariance)
+            {
+                maxVariance = variance;
+                threshold = t;
+            }
+        }
+
+        Logger.Debug($"Otsu 阈值: {threshold} (最大类间方差: {maxVariance:F0})");
+
+        // 3. 应用阈值: 低于阈值 → 黑色(文字), 高于阈值 → 白色(背景)
+        var dstData = result.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
+        var dstPixels = new byte[Math.Abs(dstData.Stride) * h];
+
+        for (int y = 0; y < h; y++)
+        {
+            int rowOff = y * dstData.Stride;
+            for (int x = 0; x < w; x++)
+            {
+                byte gv = grayValues[y * w + x];
+                byte val = gv < threshold ? (byte)0 : (byte)255;
+                int px = rowOff + x * 4;
+                dstPixels[px] = val;       // B
+                dstPixels[px + 1] = val;   // G
+                dstPixels[px + 2] = val;   // R
+                dstPixels[px + 3] = 255;   // A
+            }
+        }
+
+        Marshal.Copy(dstPixels, 0, dstData.Scan0, dstPixels.Length);
+        result.UnlockBits(dstData);
+
+        return result;
+    }
+
+    private static string EnsureDebugDir()
+    {
+        var dir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "screenshots", "debug");
+        Directory.CreateDirectory(dir);
+        return dir;
+    }
+
+    private static void SaveDebugImage(Bitmap bmp, string dir, string label)
+    {
+        try
+        {
+            int seq = Interlocked.Increment(ref _debugSeq);
+            var path = Path.Combine(dir, $"{seq:000}_{label}.png");
+            bmp.Save(path, ImageFormat.Png);
+        }
+        catch { /* 调试保存失败不影响主流程 */ }
     }
 
     /// <summary>
@@ -931,17 +1211,14 @@ static class OcrEngine
     /// </summary>
     private static async Task<SoftwareBitmap> ConvertToSoftwareBitmapAsync(Bitmap bitmap)
     {
-        // 保存 Bitmap 到内存流 (BMP 格式)
         using var ms = new MemoryStream();
         bitmap.Save(ms, ImageFormat.Bmp);
         ms.Position = 0;
 
-        // 将 .NET Stream 转换为 WinRT IRandomAccessStream
         var randomAccessStream = ms.AsRandomAccessStream();
         var decoder = await BitmapDecoder.CreateAsync(randomAccessStream);
         var softwareBitmap = await decoder.GetSoftwareBitmapAsync();
 
-        // OCR 引擎要求像素格式为 Rgba8 或 Gray8
         if (softwareBitmap.BitmapPixelFormat != BitmapPixelFormat.Rgba8 &&
             softwareBitmap.BitmapPixelFormat != BitmapPixelFormat.Gray8)
         {
