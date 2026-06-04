@@ -184,7 +184,7 @@ static async Task<int> RunOcrDetectionAsync(Arguments args)
             Logger.Info($"第二次 OCR 完成, 耗时 {sw.ElapsedMilliseconds}ms, 识别到 {detailedResult.Text.Length} 个字符");
 
             if (!string.IsNullOrWhiteSpace(detailedResult.Text))
-                Logger.Info($"第二次 OCR 结果:\n--- 二次 OCR 开始 ---\n{detailedResult.Text}--- 二次 OCR 结束 ---");
+                Logger.Info($"第二次 OCR 结果:\n--- 二次 OCR 开始 ---\n{detailedResult.Text}\n--- 二次 OCR 结束 ---");
             else
                 Logger.Warn("第二次 OCR 结果为空");
 
