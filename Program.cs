@@ -152,12 +152,12 @@ static async Task<int> RunOcrDetectionAsync(Arguments args)
         Logger.Info($"✅ 文本搜索成功: 找到匹配 \"{args.SearchText}\"");
         Logger.Info($"匹配文本坐标 (原始): ({matchRect.Value.X}, {matchRect.Value.Y}), 尺寸: {matchRect.Value.Width}x{matchRect.Value.Height}");
 
-        // 5. 裁剪区域: 从命中文本左上角延伸到窗口右下角
+        // 5. 裁剪区域: 从命中文本右下角延伸到窗口右下角
         var cropRect = new Rectangle(
-            matchRect.Value.X,
-            matchRect.Value.Y,
-            Math.Max(1, screenshot.Width - matchRect.Value.X),
-            Math.Max(1, screenshot.Height - matchRect.Value.Y));
+            matchRect.Value.Left,
+            matchRect.Value.Bottom,
+            Math.Max(1, screenshot.Width - matchRect.Value.Left),
+            Math.Max(1, screenshot.Height - matchRect.Value.Bottom));
         Logger.Info($"二次 OCR 裁剪矩形: ({cropRect.X}, {cropRect.Y}) → ({cropRect.X + cropRect.Width}, {cropRect.Y + cropRect.Height}), 尺寸: {cropRect.Width}x{cropRect.Height}");
 
         if (args.SaveScreenshot)
@@ -407,8 +407,8 @@ class Arguments
 
 static class Logger
 {
-    public static void Info(string message)  => Log("INFO",  message, ConsoleColor.Gray);
-    public static void Warn(string message)  => Log("WARN",  message, ConsoleColor.Yellow);
+    public static void Info(string message) => Log("INFO", message, ConsoleColor.Gray);
+    public static void Warn(string message) => Log("WARN", message, ConsoleColor.Yellow);
     public static void Error(string message) => Log("ERROR", message, ConsoleColor.Red);
     public static void Debug(string message) => Log("DEBUG", message, ConsoleColor.DarkGray);
 
