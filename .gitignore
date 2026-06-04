@@ -1,0 +1,26 @@
+# .NET
+bin/
+obj/
+*.user
+*.suo
+*.cache
+*.userprefs
+*.DotSettings.user
+*.nupkg
+*.snupkg
+
+# VS / Rider
+.vs/
+.idea/
+*.sln.docstates
+
+# 截图输出
+screenshots/
+
+# 用户配置文件（含窗口标题等本地信息）
+config.json
+
+# 系统文件
+Thumbs.db
+Desktop.ini
+.DS_Store
