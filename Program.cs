@@ -952,13 +952,11 @@ static class OcrEngine
         // Step 4: 执行 OCR
         var result = await engine.RecognizeAsync(softwareBitmap);
 
-        // Step 5: 提取文本 + 单词坐标（映射回原始空间）
-        var sb = new StringBuilder();
+        // Step 5: 提取单词坐标（映射回原始空间）
         var words = new List<OcrWordInfo>();
 
         foreach (var line in result.Lines)
         {
-            sb.AppendLine(line.Text);
             foreach (var word in line.Words)
             {
                 var rect = word.BoundingRect;
@@ -973,7 +971,9 @@ static class OcrEngine
             }
         }
 
-        return new OcrResultData { Text = sb.ToString().TrimEnd(), Words = words };
+        var orderedWords = OrderWordsByVisualLines(words);
+        var text = BuildVisualText(orderedWords);
+        return new OcrResultData { Text = text, Words = orderedWords };
     }
 
     /// <summary>
@@ -1037,6 +1037,134 @@ static class OcrEngine
     }
 
     // ── 内部方法 ──
+
+    private sealed class VisualLine
+    {
+        public List<OcrWordInfo> Words { get; } = new();
+        public double CenterY { get; private set; }
+        public double AverageHeight { get; private set; }
+
+        public void Add(OcrWordInfo word)
+        {
+            Words.Add(word);
+
+            double wordCenterY = word.Y + word.Height / 2.0;
+            if (Words.Count == 1)
+            {
+                CenterY = wordCenterY;
+                AverageHeight = word.Height;
+                return;
+            }
+
+            int count = Words.Count;
+            CenterY = ((CenterY * (count - 1)) + wordCenterY) / count;
+            AverageHeight = ((AverageHeight * (count - 1)) + word.Height) / count;
+        }
+    }
+
+    private static List<OcrWordInfo> OrderWordsByVisualLines(List<OcrWordInfo> words)
+    {
+        if (words.Count <= 1) return new List<OcrWordInfo>(words);
+
+        var sorted = words
+            .OrderBy(w => w.Y + w.Height / 2.0)
+            .ThenBy(w => w.X)
+            .ToList();
+
+        var lines = new List<VisualLine>();
+        foreach (var word in sorted)
+        {
+            var line = lines.FirstOrDefault(candidate => IsSameVisualLine(candidate, word));
+            if (line == null)
+            {
+                line = new VisualLine();
+                lines.Add(line);
+            }
+
+            line.Add(word);
+        }
+
+        return lines
+            .OrderBy(line => line.CenterY)
+            .SelectMany(line => line.Words.OrderBy(word => word.X))
+            .ToList();
+    }
+
+    private static bool IsSameVisualLine(VisualLine line, OcrWordInfo word)
+    {
+        double wordCenterY = word.Y + word.Height / 2.0;
+        double tolerance = Math.Max(line.AverageHeight, word.Height) * 0.6;
+        return Math.Abs(line.CenterY - wordCenterY) <= tolerance;
+    }
+
+    private static string BuildVisualText(List<OcrWordInfo> orderedWords)
+    {
+        if (orderedWords.Count == 0) return string.Empty;
+
+        var textLines = new List<string>();
+        var currentLine = new List<OcrWordInfo>();
+
+        foreach (var word in orderedWords)
+        {
+            if (currentLine.Count == 0 || IsSameVisualLine(currentLine, word))
+            {
+                currentLine.Add(word);
+                continue;
+            }
+
+            textLines.Add(BuildLineText(currentLine));
+            currentLine.Clear();
+            currentLine.Add(word);
+        }
+
+        if (currentLine.Count > 0)
+            textLines.Add(BuildLineText(currentLine));
+
+        return string.Join(Environment.NewLine, textLines.Where(line => !string.IsNullOrWhiteSpace(line)));
+    }
+
+    private static bool IsSameVisualLine(List<OcrWordInfo> currentLine, OcrWordInfo word)
+    {
+        double averageCenterY = currentLine.Average(item => item.Y + item.Height / 2.0);
+        double averageHeight = currentLine.Average(item => item.Height);
+        double wordCenterY = word.Y + word.Height / 2.0;
+        double tolerance = Math.Max(averageHeight, word.Height) * 0.6;
+        return Math.Abs(averageCenterY - wordCenterY) <= tolerance;
+    }
+
+    private static string BuildLineText(List<OcrWordInfo> lineWords)
+    {
+        var ordered = lineWords.OrderBy(word => word.X).ToList();
+        var sb = new StringBuilder();
+
+        for (int i = 0; i < ordered.Count; i++)
+        {
+            var word = ordered[i];
+            if (i > 0)
+            {
+                var previous = ordered[i - 1];
+                if (ShouldInsertSpace(previous, word))
+                    sb.Append(' ');
+            }
+
+            sb.Append(word.Text);
+        }
+
+        return sb.ToString().Trim();
+    }
+
+    private static bool ShouldInsertSpace(OcrWordInfo previous, OcrWordInfo current)
+    {
+        int gap = current.X - (previous.X + previous.Width);
+        if (gap <= 0) return false;
+
+        double previousCharWidth = previous.Text.Length > 0 ? (double)previous.Width / previous.Text.Length : previous.Width;
+        double currentCharWidth = current.Text.Length > 0 ? (double)current.Width / current.Text.Length : current.Width;
+        double typicalCharWidth = Math.Max(4.0, Math.Min(previousCharWidth, currentCharWidth));
+
+        // 跨列的大空隙补空格，避免“19:14:11未搜索到任何窗口”粘连在一起。
+        return gap >= typicalCharWidth * 1.2;
+    }
 
     private static Windows.Media.Ocr.OcrEngine GetEngine(string languageTag)
     {
