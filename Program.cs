@@ -18,6 +18,7 @@ using Windows.Media.Ocr;
 
 Console.OutputEncoding = Encoding.UTF8;
 Console.InputEncoding = Encoding.UTF8;
+DpiAwareness.Enable();
 
 PrintBanner();
 
@@ -108,7 +109,11 @@ static async Task<int> RunOcrDetectionAsync(Arguments args)
         {
             Logger.Info($"正在执行第一次 OCR (全窗口, 语言: {args.Language})...");
             var sw = Stopwatch.StartNew();
-            firstResult = await OcrEngine.RecognizeWithWordsAsync(screenshot, args.Language, upscale: 4);
+            firstResult = await OcrEngine.RecognizeWithWordsAsync(
+                screenshot,
+                args.Language,
+                upscale: 4,
+                preprocessMode: OcrEngine.OcrPreprocessMode.HighContrastBinary);
             sw.Stop();
             Logger.Info($"第一次 OCR 完成, 耗时 {sw.ElapsedMilliseconds}ms, 识别到 {firstResult.Text.Length} 个字符");
 
@@ -147,12 +152,12 @@ static async Task<int> RunOcrDetectionAsync(Arguments args)
         Logger.Info($"✅ 文本搜索成功: 找到匹配 \"{args.SearchText}\"");
         Logger.Info($"匹配文本坐标 (原始): ({matchRect.Value.X}, {matchRect.Value.Y}), 尺寸: {matchRect.Value.Width}x{matchRect.Value.Height}");
 
-        // 5. 裁剪区域: 从匹配文本左上角 → 窗口右下角
+        // 5. 裁剪区域: 从命中文本左上角延伸到窗口右下角
         var cropRect = new Rectangle(
             matchRect.Value.X,
             matchRect.Value.Y,
-            screenshot.Width - matchRect.Value.X,
-            screenshot.Height - matchRect.Value.Y);
+            Math.Max(1, screenshot.Width - matchRect.Value.X),
+            Math.Max(1, screenshot.Height - matchRect.Value.Y));
         Logger.Info($"二次 OCR 裁剪矩形: ({cropRect.X}, {cropRect.Y}) → ({cropRect.X + cropRect.Width}, {cropRect.Y + cropRect.Height}), 尺寸: {cropRect.Width}x{cropRect.Height}");
 
         if (args.SaveScreenshot)
@@ -170,7 +175,11 @@ static async Task<int> RunOcrDetectionAsync(Arguments args)
 
             Logger.Info($"正在执行第二次 OCR (裁剪区域, 高精度, 语言: {args.Language})...");
             var sw = Stopwatch.StartNew();
-            var detailedResult = await OcrEngine.RecognizeWithWordsAsync(croppedBitmap, args.Language, upscale: 8);
+            var detailedResult = await OcrEngine.RecognizeWithWordsAsync(
+                croppedBitmap,
+                args.Language,
+                upscale: 8,
+                preprocessMode: OcrEngine.OcrPreprocessMode.DetailPreserving);
             sw.Stop();
             Logger.Info($"第二次 OCR 完成, 耗时 {sw.ElapsedMilliseconds}ms, 识别到 {detailedResult.Text.Length} 个字符");
 
@@ -519,6 +528,64 @@ class WindowInfo
 }
 
 // ═══════════════════════════════════════════════════════════
+// DPI 感知
+// ═══════════════════════════════════════════════════════════
+
+static class DpiAwareness
+{
+    private static readonly IntPtr DpiAwarenessContextPerMonitorAwareV2 = new(-4);
+
+    [DllImport("user32.dll")]
+    private static extern bool SetProcessDpiAwarenessContext(IntPtr dpiContext);
+
+    [DllImport("shcore.dll")]
+    private static extern int SetProcessDpiAwareness(PROCESS_DPI_AWARENESS value);
+
+    [DllImport("user32.dll")]
+    private static extern bool SetProcessDPIAware();
+
+    private enum PROCESS_DPI_AWARENESS
+    {
+        ProcessDpiUnaware = 0,
+        ProcessSystemDpiAware = 1,
+        ProcessPerMonitorDpiAware = 2
+    }
+
+    public static void Enable()
+    {
+        try
+        {
+            if (SetProcessDpiAwarenessContext(DpiAwarenessContextPerMonitorAwareV2))
+            {
+                Logger.Debug("DPI 感知: PerMonitorV2");
+                return;
+            }
+        }
+        catch (DllNotFoundException) { }
+        catch (EntryPointNotFoundException) { }
+
+        try
+        {
+            if (SetProcessDpiAwareness(PROCESS_DPI_AWARENESS.ProcessPerMonitorDpiAware) == 0)
+            {
+                Logger.Debug("DPI 感知: PerMonitor");
+                return;
+            }
+        }
+        catch (DllNotFoundException) { }
+        catch (EntryPointNotFoundException) { }
+
+        try
+        {
+            if (SetProcessDPIAware())
+                Logger.Debug("DPI 感知: System aware");
+        }
+        catch (DllNotFoundException) { }
+        catch (EntryPointNotFoundException) { }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
 // 屏幕截图工具
 // ═══════════════════════════════════════════════════════════
 
@@ -747,7 +814,7 @@ static class ScreenCapture
                 fSourceClientAreaOnly = false,
                 opacity = 255,
                 rcSource = new RECT { Left = 0, Top = 0, Right = srcSize.cx, Bottom = srcSize.cy },
-                rcDestination = new RECT { Left = 0, Top = 0, Right = width, Bottom = height }
+                rcDestination = new RECT { Left = 0, Top = 0, Right = srcSize.cx, Bottom = srcSize.cy }
             };
             DwmUpdateThumbnailProperties(hThumbnail, ref props);
 
@@ -756,7 +823,7 @@ static class ScreenCapture
             Thread.Sleep(50); // 额外缓冲确保合成完毕
 
             // 5. PrintWindow 抓取宿主窗口的 DWM 合成内容
-            var bitmap = new Bitmap(width, height, PixelFormat.Format32bppArgb);
+            var bitmap = new Bitmap(srcSize.cx, srcSize.cy, PixelFormat.Format32bppArgb);
             using (var g = Graphics.FromImage(bitmap))
             {
                 var hdc = g.GetHdc();
@@ -857,14 +924,24 @@ static class OcrEngine
 
     // ── 公开方法 ──
 
+    public enum OcrPreprocessMode
+    {
+        HighContrastBinary,
+        DetailPreserving
+    }
+
     /// <summary>
     /// 执行 OCR 识别，返回文本 + 单词坐标（坐标已映射到原始图像空间）
     /// </summary>
-    public static async Task<OcrResultData> RecognizeWithWordsAsync(Bitmap bitmap, string languageTag, int upscale)
+    public static async Task<OcrResultData> RecognizeWithWordsAsync(
+        Bitmap bitmap,
+        string languageTag,
+        int upscale,
+        OcrPreprocessMode preprocessMode = OcrPreprocessMode.HighContrastBinary)
     {
         // Step 1: 图像预处理 —— 放大提升识别率
-        using var processed = PreprocessForOcr(bitmap, upscale);
-        Logger.Debug($"图像预处理 ({upscale}x): {bitmap.Width}x{bitmap.Height} → {processed.Width}x{processed.Height}");
+        using var processed = PreprocessForOcr(bitmap, upscale, preprocessMode);
+        Logger.Debug($"图像预处理 ({preprocessMode}, {upscale}x): {bitmap.Width}x{bitmap.Height} → {processed.Width}x{processed.Height}");
 
         // Step 2: 转换为 SoftwareBitmap
         using var softwareBitmap = await ConvertToSoftwareBitmapAsync(processed);
@@ -1026,17 +1103,18 @@ static class OcrEngine
     private static int _debugSeq;
 
     /// <summary>
-    /// OCR 预处理：放大 → 灰度化 → 对比度增强
-    /// 每步输出调试截图到 screenshots/debug/
+    /// OCR 预处理：根据场景选择高对比二值化或细节保留模式
+    /// 每步输出调试截图到 screenshots/
     /// </summary>
-    private static Bitmap PreprocessForOcr(Bitmap source, int upscale)
+    private static Bitmap PreprocessForOcr(Bitmap source, int upscale, OcrPreprocessMode preprocessMode)
     {
         int newW = source.Width * upscale;
         int newH = source.Height * upscale;
         var debugDir = EnsureDebugDir();
+        var modePrefix = preprocessMode == OcrPreprocessMode.HighContrastBinary ? "hc" : "detail";
 
         // 保存原始截图
-        SaveDebugImage(source, debugDir, "01_original");
+        SaveDebugImage(source, debugDir, $"{modePrefix}_01_original");
 
         // 1. 高质量放大
         var scaled = new Bitmap(newW, newH, PixelFormat.Format32bppArgb);
@@ -1048,7 +1126,19 @@ static class OcrEngine
             g.CompositingQuality = System.Drawing.Drawing2D.CompositingQuality.HighQuality;
             g.DrawImage(source, new Rectangle(0, 0, newW, newH));
         }
-        SaveDebugImage(scaled, debugDir, "02_scaled");
+        SaveDebugImage(scaled, debugDir, $"{modePrefix}_02_scaled");
+
+        if (preprocessMode == OcrPreprocessMode.DetailPreserving)
+        {
+            var enhanced = ApplyColorContrast(scaled, 1.35f);
+            scaled.Dispose();
+            SaveDebugImage(enhanced, debugDir, $"{modePrefix}_03_color_contrast");
+
+            var sharpened = ApplySharpen(enhanced);
+            enhanced.Dispose();
+            SaveDebugImage(sharpened, debugDir, $"{modePrefix}_04_sharpen");
+            return sharpened;
+        }
 
         // 2. 灰度化 (ColorMatrix)
         var gray = new Bitmap(newW, newH, PixelFormat.Format32bppArgb);
@@ -1067,35 +1157,98 @@ static class OcrEngine
                 0, 0, newW, newH, GraphicsUnit.Pixel, attr);
         }
         scaled.Dispose();
-        SaveDebugImage(gray, debugDir, "03_grayscale");
+        SaveDebugImage(gray, debugDir, $"{modePrefix}_03_grayscale");
 
         // 3. 对比度增强 (ColorMatrix: contrast 3.5x, 强拉对比)
-        var contrast = 3.5f;
-        var translate = (1.0f - contrast) * 0.5f;
-        var contrasted = new Bitmap(newW, newH, PixelFormat.Format32bppArgb);
-        using (var g = Graphics.FromImage(contrasted))
-        {
-            var contrastMatrix = new ColorMatrix(new float[][] {
-                new float[] { contrast, 0,        0,        0, 0 },
-                new float[] { 0,        contrast, 0,        0, 0 },
-                new float[] { 0,        0,        contrast, 0, 0 },
-                new float[] { 0,        0,        0,        1, 0 },
-                new float[] { translate, translate, translate, 0, 1 }
-            });
-            using var attr = new ImageAttributes();
-            attr.SetColorMatrix(contrastMatrix);
-            g.DrawImage(gray, new Rectangle(0, 0, newW, newH),
-                0, 0, newW, newH, GraphicsUnit.Pixel, attr);
-        }
+        var contrasted = ApplyColorContrast(gray, 3.5f);
         gray.Dispose();
-        SaveDebugImage(contrasted, debugDir, "04_contrast");
+        SaveDebugImage(contrasted, debugDir, $"{modePrefix}_04_contrast");
 
         // 4. Otsu 自适应阈值二值化：纯黑文字 + 纯白背景
         var binary = ApplyOtsuBinarization(contrasted);
         contrasted.Dispose();
-        SaveDebugImage(binary, debugDir, "05_binary");
+        SaveDebugImage(binary, debugDir, $"{modePrefix}_05_binary");
 
         return binary;
+    }
+
+    private static Bitmap ApplyColorContrast(Bitmap source, float contrast)
+    {
+        int w = source.Width;
+        int h = source.Height;
+        var translate = (1.0f - contrast) * 0.5f;
+        var result = new Bitmap(w, h, PixelFormat.Format32bppArgb);
+
+        using var g = Graphics.FromImage(result);
+        using var attr = new ImageAttributes();
+        var contrastMatrix = new ColorMatrix(new float[][] {
+            new float[] { contrast, 0,        0,        0, 0 },
+            new float[] { 0,        contrast, 0,        0, 0 },
+            new float[] { 0,        0,        contrast, 0, 0 },
+            new float[] { 0,        0,        0,        1, 0 },
+            new float[] { translate, translate, translate, 0, 1 }
+        });
+        attr.SetColorMatrix(contrastMatrix);
+        g.DrawImage(source, new Rectangle(0, 0, w, h), 0, 0, w, h, GraphicsUnit.Pixel, attr);
+
+        return result;
+    }
+
+    private static Bitmap ApplySharpen(Bitmap source)
+    {
+        int w = source.Width;
+        int h = source.Height;
+        var result = new Bitmap(w, h, PixelFormat.Format32bppArgb);
+
+        var srcData = source.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        var dstData = result.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
+
+        try
+        {
+            int srcStride = srcData.Stride;
+            int dstStride = dstData.Stride;
+            var srcPixels = new byte[Math.Abs(srcStride) * h];
+            var dstPixels = new byte[Math.Abs(dstStride) * h];
+
+            Marshal.Copy(srcData.Scan0, srcPixels, 0, srcPixels.Length);
+
+            for (int y = 0; y < h; y++)
+            {
+                for (int x = 0; x < w; x++)
+                {
+                    int dstOffset = y * dstStride + x * 4;
+                    int srcOffset = y * srcStride + x * 4;
+
+                    if (x == 0 || y == 0 || x == w - 1 || y == h - 1)
+                    {
+                        Buffer.BlockCopy(srcPixels, srcOffset, dstPixels, dstOffset, 4);
+                        continue;
+                    }
+
+                    for (int channel = 0; channel < 3; channel++)
+                    {
+                        int center = srcPixels[srcOffset + channel] * 5;
+                        int left = srcPixels[y * srcStride + (x - 1) * 4 + channel];
+                        int right = srcPixels[y * srcStride + (x + 1) * 4 + channel];
+                        int top = srcPixels[(y - 1) * srcStride + x * 4 + channel];
+                        int bottom = srcPixels[(y + 1) * srcStride + x * 4 + channel];
+                        int value = center - left - right - top - bottom;
+                        dstPixels[dstOffset + channel] = (byte)Math.Clamp(value, 0, 255);
+                    }
+
+                    dstPixels[dstOffset + 3] = srcPixels[srcOffset + 3];
+                }
+            }
+
+            Marshal.Copy(dstPixels, 0, dstData.Scan0, dstPixels.Length);
+        }
+        finally
+        {
+            source.UnlockBits(srcData);
+            result.UnlockBits(dstData);
+        }
+
+        return result;
     }
 
     /// <summary>
@@ -1190,7 +1343,7 @@ static class OcrEngine
 
     private static string EnsureDebugDir()
     {
-        var dir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "screenshots", "debug");
+        var dir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "screenshots");
         Directory.CreateDirectory(dir);
         return dir;
     }
