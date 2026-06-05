@@ -15,7 +15,7 @@ internal sealed class RollingOcrOutputFilter
     ];
 
     private static readonly Regex LeadingTimePattern = new(
-        @"^\s*(?<time>[0-9０-９:：﹕︰．.·•,，]{6,16})\s*(?<content>\S.+)$",
+        @"^\s*(?<time>[0-9０-９:：﹕︰．.·•,，\-]{4,20})\s*(?<content>\S.+)$",
         RegexOptions.Compiled);
 
     private static readonly Regex StructuredEventPattern = new(
@@ -23,9 +23,8 @@ internal sealed class RollingOcrOutputFilter
         RegexOptions.Compiled);
 
     private const int MaxHistorySize = 160;
-    private readonly List<OutputLine> _acceptedHistory = [];
+    private readonly List<string> _acceptedSignatures = [];
     private List<string>? _previousFrameSignatures;
-    private TimeSpan? _latestAcceptedTime;
 
     public Result Filter(List<OcrEngine.OcrLineInfo> lines)
     {
@@ -45,7 +44,21 @@ internal sealed class RollingOcrOutputFilter
             .DistinctBy(line => line.Signature)
             .ToList();
 
-        var newLines = ExtractNewLines(normalizedLines);
+        var visibleSlice = TrimFrameOverlap(normalizedLines);
+        var newLines = visibleSlice
+            .Where(line => !_acceptedSignatures.Contains(line.Signature, StringComparer.Ordinal))
+            .ToList();
+
+        foreach (var line in newLines)
+        {
+            _acceptedSignatures.Add(line.Signature);
+        }
+
+        if (_acceptedSignatures.Count > MaxHistorySize)
+        {
+            _acceptedSignatures.RemoveRange(0, _acceptedSignatures.Count - MaxHistorySize);
+        }
+
         _previousFrameSignatures = normalizedLines.Select(line => line.Signature).ToList();
         return Result.Accept(currentLines, newLines);
     }
@@ -68,32 +81,6 @@ internal sealed class RollingOcrOutputFilter
 
         reason = $"单行内容疑似塌缩，且命中 {structuredMarkerCount} 个结构化标记";
         return true;
-    }
-
-    private List<OutputLine> ExtractNewLines(List<OutputLine> currentLines)
-    {
-        if (currentLines.Count == 0)
-        {
-            return [];
-        }
-
-        var visibleSlice = TrimFrameOverlap(currentLines);
-        if (visibleSlice.Count == 0)
-        {
-            return [];
-        }
-
-        var accepted = new List<OutputLine>();
-        foreach (var line in visibleSlice)
-        {
-            if (IsTimeRegression(line)) continue;
-            if (IsDuplicateFromHistory(line)) continue;
-
-            accepted.Add(line);
-            RegisterAcceptedLine(line);
-        }
-
-        return accepted;
     }
 
     private List<OutputLine> TrimFrameOverlap(List<OutputLine> currentLines)
@@ -129,7 +116,7 @@ internal sealed class RollingOcrOutputFilter
             .ToList();
     }
 
-    private OutputLine? TryBuildOutputLine(OcrEngine.OcrLineInfo line)
+    private static OutputLine? TryBuildOutputLine(OcrEngine.OcrLineInfo line)
     {
         var rawText = NormalizeText(line.RawText);
         var content = NormalizeContent(line.Content);
@@ -150,64 +137,25 @@ internal sealed class RollingOcrOutputFilter
             }
         }
 
-        if (string.IsNullOrWhiteSpace(timeText)) return null;
-        if (!TryParsePreciseTime(timeText, out var timeValue)) return null;
-
         content = NormalizeContent(content);
+        if (string.IsNullOrWhiteSpace(content)) return null;
         if (!IsUsableContent(content)) return null;
 
         var category = ClassifyContent(content);
         var canonicalContent = BuildCanonicalContent(content, category);
         if (string.IsNullOrWhiteSpace(canonicalContent)) return null;
 
+        if (string.IsNullOrWhiteSpace(timeText))
+        {
+            timeText = ExtractLooseTime(rawText) ?? string.Empty;
+        }
+
         return new OutputLine(
             timeText,
             content,
             category,
             canonicalContent,
-            $"{timeText}|{category}|{canonicalContent}",
-            timeValue);
-    }
-
-    private bool IsTimeRegression(OutputLine line)
-    {
-        if (_latestAcceptedTime == null) return false;
-        return line.TimeValue < _latestAcceptedTime.Value - TimeSpan.FromSeconds(1);
-    }
-
-    private bool IsDuplicateFromHistory(OutputLine line)
-    {
-        foreach (var previous in _acceptedHistory)
-        {
-            if (string.Equals(previous.Signature, line.Signature, StringComparison.Ordinal))
-            {
-                return true;
-            }
-
-            if (line.Category is LineCategory.TaskStarted or LineCategory.TaskCompleted or LineCategory.TaskFailed
-                && previous.Category == line.Category
-                && previous.TimeValue == line.TimeValue
-                && AreSimilarCanonicalContents(previous.CanonicalContent, line.CanonicalContent))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private void RegisterAcceptedLine(OutputLine line)
-    {
-        _acceptedHistory.Add(line);
-        if (_acceptedHistory.Count > MaxHistorySize)
-        {
-            _acceptedHistory.RemoveAt(0);
-        }
-
-        if (_latestAcceptedTime == null || line.TimeValue > _latestAcceptedTime.Value)
-        {
-            _latestAcceptedTime = line.TimeValue;
-        }
+            $"{category}|{canonicalContent}");
     }
 
     private static bool TryExtractLeadingTime(string text, out string timeText, out string content)
@@ -246,23 +194,46 @@ internal sealed class RollingOcrOutputFilter
                 continue;
             }
 
+            // 非法字符直接视为“不可靠时间”，但不阻止内容继续输出
             return string.Empty;
         }
 
-        if (digits.Length < 6) return string.Empty;
+        if (digits.Length == 4)
+        {
+            string hourText = digits.ToString(0, 2);
+            string minuteText = digits.ToString(2, 2);
+            if (!IsValidHourMinute(hourText, minuteText)) return string.Empty;
+            return $"{hourText}:{minuteText}";
+        }
 
-        string hourText = digits.ToString(0, 2);
-        string minuteText = digits.ToString(2, 2);
-        string secondText = digits.ToString(4, 2);
-        if (!IsValidTimeComponents(hourText, minuteText, secondText)) return string.Empty;
+        if (digits.Length == 6)
+        {
+            string hourText = digits.ToString(0, 2);
+            string minuteText = digits.ToString(2, 2);
+            string secondText = digits.ToString(4, 2);
+            if (!IsValidTimeComponents(hourText, minuteText, secondText)) return string.Empty;
+            return $"{hourText}:{minuteText}:{secondText}";
+        }
 
-        return $"{hourText}:{minuteText}:{secondText}";
+        if (digits.Length is >= 7 and <= 9)
+        {
+            string hourText = digits.ToString(0, 2);
+            string minuteText = digits.ToString(2, 2);
+            string secondText = digits.ToString(4, 2);
+            if (!IsValidTimeComponents(hourText, minuteText, secondText)) return string.Empty;
+            string fraction = digits.ToString(6, digits.Length - 6);
+            return $"{hourText}:{minuteText}:{secondText}.{fraction}";
+        }
+
+        return string.Empty;
     }
 
-    private static bool TryParsePreciseTime(string timeText, out TimeSpan timeValue)
+    private static string? ExtractLooseTime(string text)
     {
-        timeValue = default;
-        return TimeSpan.TryParseExact(timeText, @"hh\:mm\:ss", null, out timeValue);
+        var match = LeadingTimePattern.Match(text);
+        if (!match.Success) return null;
+        var candidate = NormalizeText(match.Groups["time"].Value);
+        return string.IsNullOrWhiteSpace(candidate) ? null : candidate;
     }
 
     private static string NormalizeContent(string content)
@@ -386,7 +357,10 @@ internal sealed class RollingOcrOutputFilter
         if (content.StartsWith("开始", StringComparison.Ordinal)
             || content.StartsWith("正在", StringComparison.Ordinal)
             || content.StartsWith("没有", StringComparison.Ordinal)
-            || content.StartsWith("领取", StringComparison.Ordinal))
+            || content.StartsWith("领取", StringComparison.Ordinal)
+            || content.StartsWith("进入", StringComparison.Ordinal)
+            || content.StartsWith("画面", StringComparison.Ordinal)
+            || content.StartsWith("好友", StringComparison.Ordinal))
         {
             return LineCategory.Activity;
         }
@@ -412,54 +386,11 @@ internal sealed class RollingOcrOutputFilter
         foreach (var c in normalized)
         {
             if (char.IsWhiteSpace(c)) continue;
-            if (c is '：' or ':' or '．' or '.' or ',' or '，' or '、' or '·' or '•') continue;
+            if (c is '：' or ':' or '．' or '.' or ',' or '，' or '、' or '·' or '•' or '﹕' or '︰' or '-') continue;
             sb.Append(NormalizeDigitChar(c));
         }
 
         return sb.ToString();
-    }
-
-    private static bool AreSimilarCanonicalContents(string left, string right)
-    {
-        if (string.Equals(left, right, StringComparison.Ordinal)) return true;
-        if (string.IsNullOrEmpty(left) || string.IsNullOrEmpty(right)) return false;
-
-        var shorter = left.Length <= right.Length ? left : right;
-        var longer = left.Length > right.Length ? left : right;
-        if (longer.Contains(shorter, StringComparison.Ordinal) && longer.Length - shorter.Length <= 2)
-        {
-            return true;
-        }
-
-        int threshold = Math.Max(1, Math.Min(2, shorter.Length / 6));
-        return GetLevenshteinDistance(left, right) <= threshold;
-    }
-
-    private static int GetLevenshteinDistance(string left, string right)
-    {
-        var costs = new int[right.Length + 1];
-        for (int j = 0; j <= right.Length; j++)
-        {
-            costs[j] = j;
-        }
-
-        for (int i = 1; i <= left.Length; i++)
-        {
-            int previousDiagonal = costs[0];
-            costs[0] = i;
-
-            for (int j = 1; j <= right.Length; j++)
-            {
-                int previousTop = costs[j];
-                int substitutionCost = left[i - 1] == right[j - 1] ? 0 : 1;
-                costs[j] = Math.Min(
-                    Math.Min(costs[j] + 1, costs[j - 1] + 1),
-                    previousDiagonal + substitutionCost);
-                previousDiagonal = previousTop;
-            }
-        }
-
-        return costs[right.Length];
     }
 
     private static string NormalizeText(string text)
@@ -499,13 +430,18 @@ internal sealed class RollingOcrOutputFilter
 
     private static bool IsTimeSeparator(char c)
     {
-        return c is ':' or '：' or '﹕' or '︰' or '．' or '.' or '·' or '•' or ',' or '，';
+        return c is ':' or '：' or '﹕' or '︰' or '．' or '.' or '·' or '•' or ',' or '，' or '-';
+    }
+
+    private static bool IsValidHourMinute(string hourText, string minuteText)
+    {
+        if (!int.TryParse(hourText, out var hour) || hour is < 0 or > 23) return false;
+        return int.TryParse(minuteText, out var minute) && minute is >= 0 and <= 59;
     }
 
     private static bool IsValidTimeComponents(string hourText, string minuteText, string secondText)
     {
-        if (!int.TryParse(hourText, out var hour) || hour is < 0 or > 23) return false;
-        if (!int.TryParse(minuteText, out var minute) || minute is < 0 or > 59) return false;
+        if (!IsValidHourMinute(hourText, minuteText)) return false;
         return int.TryParse(secondText, out var second) && second is >= 0 and <= 59;
     }
 
@@ -561,15 +497,13 @@ internal sealed class RollingOcrOutputFilter
         string content,
         LineCategory category,
         string canonicalContent,
-        string signature,
-        TimeSpan timeValue)
+        string signature)
     {
         public string TimeText { get; } = timeText;
         public string Content { get; } = content;
         public LineCategory Category { get; } = category;
         public string CanonicalContent { get; } = canonicalContent;
         public string Signature { get; } = signature;
-        public TimeSpan TimeValue { get; } = timeValue;
     }
 
     internal enum LineCategory
