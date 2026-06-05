@@ -205,12 +205,13 @@ internal static class OcrEngine
             var rawText = NormalizeOcrSpacing(BuildLineText(orderedWords));
             var split = TrySplitTimeAndContent(orderedWords);
             var content = split?.Content ?? rawText;
+            var normalizedContent = NormalizeStructuredContent(SanitizeContentPrefix(NormalizeOcrSpacing(content)));
 
             result.Add(new OcrLineInfo
             {
                 RawText = rawText,
                 TimeText = split?.TimeText ?? string.Empty,
-                Content = NormalizeOcrSpacing(content),
+                Content = normalizedContent,
                 Words = orderedWords
             });
         }
@@ -369,6 +370,57 @@ internal static class OcrEngine
         normalized = Regex.Replace(normalized, @"\s+([，。；：！？、])", "$1");
         normalized = Regex.Replace(normalized, @"([，。；：！？、])\s+", "$1");
         return normalized;
+    }
+
+    private static string SanitizeContentPrefix(string content)
+    {
+        if (string.IsNullOrWhiteSpace(content)) return string.Empty;
+
+        var trimmed = content.TrimStart();
+        if (trimmed.Length < 2) return content;
+
+        char first = trimmed[0];
+        char second = trimmed[1];
+        if (IsSuspiciousIconPrefix(first) && IsCjkOrPunct(second))
+        {
+            return trimmed[1..].TrimStart();
+        }
+
+        return content;
+    }
+
+    private static string NormalizeStructuredContent(string content)
+    {
+        if (string.IsNullOrWhiteSpace(content)) return string.Empty;
+
+        var normalized = content;
+
+        // 修复固定前缀后面的图标/表情被 OCR 成 0/O/· 等噪声字符。
+        normalized = Regex.Replace(normalized, @"^(任务开始|任务完成)\s+[0Oo○●·•．.]\s*(?=\S)", "$1：");
+
+        // 如果固定前缀后直接跟正文但没有分隔符，则补一个中文冒号。
+        normalized = Regex.Replace(normalized, @"^(任务开始|任务完成)(?![:：．.])\s+(?=\S)", "$1：");
+
+        // 将被 OCR 成句点的分隔符统一回中文冒号。
+        normalized = Regex.Replace(normalized, @"^(任务开始|任务完成)[．.]", "$1：");
+
+        // 修复冒号后紧跟图标/表情被识别成 0/O/· 等噪声字符的情况。
+        normalized = Regex.Replace(normalized, @"^(任务开始|任务完成)[:：][0Oo○●·•．.]\s*(?=\S)", "$1：");
+
+        return NormalizeOcrSpacing(normalized);
+    }
+
+    private static bool IsSuspiciousIconPrefix(char c)
+    {
+        return c == '0'
+            || c == 'O'
+            || c == 'o'
+            || c == '○'
+            || c == '●'
+            || c == '·'
+            || c == '•'
+            || c == '．'
+            || c == '.';
     }
 
     private static string? TryNormalizeTimeText(string text)
