@@ -165,6 +165,7 @@ internal static class AppRunner
 
     private static async Task<int> RunRollingRecognitionAsync(WindowInfo window, Arguments args, Rectangle cropRect, int attempt)
     {
+        var outputFilter = new RollingOcrOutputFilter();
         using var cancellation = new CancellationTokenSource();
         ConsoleCancelEventHandler? handler = (_, e) =>
         {
@@ -179,7 +180,6 @@ internal static class AppRunner
         Console.CancelKeyPress += handler;
         Logger.Info("进入滚动识别模式，按 Ctrl+C 停止。");
 
-        List<string>? previousKeys = null;
         int round = 1;
 
         try
@@ -214,24 +214,17 @@ internal static class AppRunner
                         sw.Stop();
                         Logger.Debug($"滚动 OCR 第 {round} 次完成, 耗时 {sw.ElapsedMilliseconds}ms, 识别到 {detailedResult.Text.Length} 个字符");
 
-                        var currentLines = detailedResult.Lines
-                            .Where(line => !string.IsNullOrWhiteSpace(line.RawText))
-                            .ToList();
-                        if (IsUnstableRollingFrame(currentLines, previousKeys))
+                        var filterResult = outputFilter.Filter(detailedResult.Lines);
+                        if (!filterResult.Accepted)
                         {
-                            Logger.Warn($"滚动 OCR 第 {round} 次结果疑似异常塌缩，已跳过本轮输出。当前共 {currentLines.Count} 行。");
+                            Logger.Warn($"滚动 OCR 第 {round} 次结果已过滤: {filterResult.RejectionReason}。当前共 {filterResult.CurrentLines.Count} 行。");
                             continue;
                         }
 
-                        var currentKeys = currentLines.Select(BuildLineKey).ToList();
-                        var newLines = ExtractNewLines(currentLines, currentKeys, previousKeys);
-
-                        foreach (var line in newLines)
+                        foreach (var line in filterResult.NewLines)
                         {
                             Logger.Info($"结构化行: TimeText=\"{line.TimeText}\", Content=\"{line.Content}\"");
                         }
-
-                        previousKeys = currentKeys;
                     }
                 }
                 catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
@@ -280,87 +273,6 @@ internal static class AppRunner
         if (width <= 0 || height <= 0) return Rectangle.Empty;
 
         return new Rectangle(x, y, width, height);
-    }
-
-    private static string BuildLineKey(OcrEngine.OcrLineInfo line)
-    {
-        var timeText = line.TimeText.Trim();
-        var content = line.Content.Trim();
-        if (!string.IsNullOrWhiteSpace(timeText))
-        {
-            return timeText + "|" + content;
-        }
-
-        return string.IsNullOrWhiteSpace(content) ? line.RawText.Trim() : content;
-    }
-
-    private static List<OcrEngine.OcrLineInfo> ExtractNewLines(
-        List<OcrEngine.OcrLineInfo> currentLines,
-        List<string> currentKeys,
-        List<string>? previousKeys)
-    {
-        if (previousKeys == null || previousKeys.Count == 0)
-        {
-            return currentLines;
-        }
-
-        int maxOverlap = Math.Min(previousKeys.Count, currentKeys.Count);
-        for (int overlap = maxOverlap; overlap >= 1; overlap--)
-        {
-            bool matched = true;
-            for (int i = 0; i < overlap; i++)
-            {
-                if (!string.Equals(previousKeys[previousKeys.Count - overlap + i], currentKeys[i], StringComparison.Ordinal))
-                {
-                    matched = false;
-                    break;
-                }
-            }
-
-            if (matched)
-            {
-                return currentLines.Skip(overlap).ToList();
-            }
-        }
-
-        var previousSet = new HashSet<string>(previousKeys, StringComparer.Ordinal);
-        return currentLines
-            .Where((line, index) => !previousSet.Contains(currentKeys[index]))
-            .ToList();
-    }
-
-    private static bool IsUnstableRollingFrame(List<OcrEngine.OcrLineInfo> currentLines, List<string>? previousKeys)
-    {
-        if (previousKeys == null || previousKeys.Count < 2) return false;
-        if (currentLines.Count != 1) return false;
-
-        var onlyLine = currentLines[0];
-        if (!string.IsNullOrWhiteSpace(onlyLine.TimeText)) return false;
-
-        var content = onlyLine.Content.Trim();
-        if (content.Length < 80) return false;
-
-        int structuredMarkerCount = CountOccurrences(content, "任务开始")
-            + CountOccurrences(content, "任务完成")
-            + CountOccurrences(content, "任务失败")
-            + CountOccurrences(content, "正在检查画面");
-
-        return structuredMarkerCount >= 2;
-    }
-
-    private static int CountOccurrences(string text, string value)
-    {
-        if (string.IsNullOrEmpty(text) || string.IsNullOrEmpty(value)) return 0;
-
-        int count = 0;
-        int index = 0;
-        while ((index = text.IndexOf(value, index, StringComparison.Ordinal)) >= 0)
-        {
-            count++;
-            index += value.Length;
-        }
-
-        return count;
     }
 
     private static void PrintBanner()
