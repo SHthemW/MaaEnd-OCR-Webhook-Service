@@ -225,7 +225,7 @@ internal static class OcrEngine
 
         foreach (var line in lines)
         {
-            if (string.IsNullOrWhiteSpace(line.TimeText) && merged.Count > 0)
+            if (string.IsNullOrWhiteSpace(line.TimeText) && merged.Count > 0 && ShouldMergeContinuationLine(merged[^1], line))
             {
                 var previous = merged[^1];
                 previous.RawText = NormalizeOcrSpacing(CombineContinuationText(previous.RawText, line.RawText));
@@ -238,6 +238,37 @@ internal static class OcrEngine
         }
 
         return merged;
+    }
+
+    private static bool ShouldMergeContinuationLine(OcrLineInfo previous, OcrLineInfo current)
+    {
+        if (string.IsNullOrWhiteSpace(previous.TimeText)) return false;
+        if (current.Words.Count == 0) return false;
+        if (string.IsNullOrWhiteSpace(current.Content)) return false;
+
+        var currentText = current.Content.Trim();
+        if (currentText.Length > 32) return false;
+
+        int previousFirstX = GetFirstWordX(previous.Words);
+        int currentFirstX = GetFirstWordX(current.Words);
+        if (previousFirstX >= 0 && currentFirstX >= 0 && currentFirstX <= previousFirstX + 8)
+        {
+            return false;
+        }
+
+        int previousBottom = GetMaxBottom(previous.Words);
+        int currentTop = GetMinTop(current.Words);
+        double averageHeight = GetAverageHeight(previous.Words.Concat(current.Words));
+        if (previousBottom >= 0 && currentTop >= 0 && averageHeight > 0)
+        {
+            int verticalGap = currentTop - previousBottom;
+            if (verticalGap > averageHeight * 1.2)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static string CombineContinuationText(string left, string right)
@@ -431,19 +462,49 @@ internal static class OcrEngine
         if (normalized == null) return null;
 
         var digits = new string(normalized.Where(char.IsDigit).ToArray());
-        if (digits.Length == 4)
+        if (digits.Length == 4 && IsValidTimeComponents(digits[..2], digits[2..4]))
             return $"{digits[..2]}:{digits[2..4]}";
 
-        if (digits.Length == 6)
+        if (digits.Length == 6 && IsValidTimeComponents(digits[..2], digits[2..4], digits[4..6]))
             return $"{digits[..2]}:{digits[2..4]}:{digits[4..6]}";
 
         if (digits.Length is >= 7 and <= 9)
         {
+            if (!IsValidTimeComponents(digits[..2], digits[2..4], digits[4..6])) return null;
             var fraction = digits[6..];
             return $"{digits[..2]}:{digits[2..4]}:{digits[4..6]}.{fraction}";
         }
 
         return null;
+    }
+
+    private static bool IsValidTimeComponents(string hourText, string minuteText, string? secondText = null)
+    {
+        if (!int.TryParse(hourText, out var hour) || hour is < 0 or > 23) return false;
+        if (!int.TryParse(minuteText, out var minute) || minute is < 0 or > 59) return false;
+        if (secondText == null) return true;
+        return int.TryParse(secondText, out var second) && second is >= 0 and <= 59;
+    }
+
+    private static int GetFirstWordX(List<OcrWordInfo> words)
+    {
+        return words.Count == 0 ? -1 : words.Min(word => word.X);
+    }
+
+    private static int GetMinTop(List<OcrWordInfo> words)
+    {
+        return words.Count == 0 ? -1 : words.Min(word => word.Y);
+    }
+
+    private static int GetMaxBottom(List<OcrWordInfo> words)
+    {
+        return words.Count == 0 ? -1 : words.Max(word => word.Y + word.Height);
+    }
+
+    private static double GetAverageHeight(IEnumerable<OcrWordInfo> words)
+    {
+        var heights = words.Select(word => word.Height).Where(height => height > 0).ToList();
+        return heights.Count == 0 ? 0 : heights.Average();
     }
 
     private static string? NormalizeTimeCandidate(string text)

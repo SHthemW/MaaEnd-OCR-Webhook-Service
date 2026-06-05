@@ -217,6 +217,12 @@ internal static class AppRunner
                         var currentLines = detailedResult.Lines
                             .Where(line => !string.IsNullOrWhiteSpace(line.RawText))
                             .ToList();
+                        if (IsUnstableRollingFrame(currentLines, previousKeys))
+                        {
+                            Logger.Warn($"滚动 OCR 第 {round} 次结果疑似异常塌缩，已跳过本轮输出。当前共 {currentLines.Count} 行。");
+                            continue;
+                        }
+
                         var currentKeys = currentLines.Select(BuildLineKey).ToList();
                         var newLines = ExtractNewLines(currentLines, currentKeys, previousKeys);
 
@@ -321,6 +327,40 @@ internal static class AppRunner
         return currentLines
             .Where((line, index) => !previousSet.Contains(currentKeys[index]))
             .ToList();
+    }
+
+    private static bool IsUnstableRollingFrame(List<OcrEngine.OcrLineInfo> currentLines, List<string>? previousKeys)
+    {
+        if (previousKeys == null || previousKeys.Count < 2) return false;
+        if (currentLines.Count != 1) return false;
+
+        var onlyLine = currentLines[0];
+        if (!string.IsNullOrWhiteSpace(onlyLine.TimeText)) return false;
+
+        var content = onlyLine.Content.Trim();
+        if (content.Length < 80) return false;
+
+        int structuredMarkerCount = CountOccurrences(content, "任务开始")
+            + CountOccurrences(content, "任务完成")
+            + CountOccurrences(content, "任务失败")
+            + CountOccurrences(content, "正在检查画面");
+
+        return structuredMarkerCount >= 2;
+    }
+
+    private static int CountOccurrences(string text, string value)
+    {
+        if (string.IsNullOrEmpty(text) || string.IsNullOrEmpty(value)) return 0;
+
+        int count = 0;
+        int index = 0;
+        while ((index = text.IndexOf(value, index, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            index += value.Length;
+        }
+
+        return count;
     }
 
     private static void PrintBanner()
