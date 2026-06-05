@@ -214,7 +214,28 @@ internal static class OcrEngine
             });
         }
 
-        return result;
+        return MergeContinuationLines(result);
+    }
+
+    private static List<OcrLineInfo> MergeContinuationLines(List<OcrLineInfo> lines)
+    {
+        var merged = new List<OcrLineInfo>();
+
+        foreach (var line in lines)
+        {
+            if (string.IsNullOrWhiteSpace(line.TimeText) && merged.Count > 0)
+            {
+                var previous = merged[^1];
+                previous.RawText += line.RawText;
+                previous.Content += line.Content;
+                previous.Words.AddRange(line.Words);
+                continue;
+            }
+
+            merged.Add(line);
+        }
+
+        return merged;
     }
 
     private static (string TimeText, string Content)? TrySplitTimeAndContent(List<OcrWordInfo> orderedWords)
@@ -223,6 +244,7 @@ internal static class OcrEngine
 
         int? bestSplitIndex = null;
         double bestGapScore = 0;
+        string? bestTimeText = null;
 
         for (int i = 0; i < orderedWords.Count - 1; i++)
         {
@@ -232,7 +254,8 @@ internal static class OcrEngine
             if (gap <= 0) continue;
 
             var leftText = BuildLineText(orderedWords.Take(i + 1).ToList());
-            if (!LooksLikeTimeText(leftText)) continue;
+            var normalizedTimeText = TryNormalizeTimeText(leftText);
+            if (normalizedTimeText == null) continue;
 
             double previousCharWidth = previous.Text.Length > 0 ? (double)previous.Width / previous.Text.Length : previous.Width;
             double currentCharWidth = current.Text.Length > 0 ? (double)current.Width / current.Text.Length : current.Width;
@@ -243,16 +266,16 @@ internal static class OcrEngine
             {
                 bestGapScore = gapScore;
                 bestSplitIndex = i;
+                bestTimeText = normalizedTimeText;
             }
         }
 
-        if (bestSplitIndex == null || bestGapScore < 1.8) return null;
+        if (bestSplitIndex == null || bestGapScore < 1.8 || string.IsNullOrWhiteSpace(bestTimeText)) return null;
 
-        string timeText = BuildLineText(orderedWords.Take(bestSplitIndex.Value + 1).ToList());
         string content = BuildLineText(orderedWords.Skip(bestSplitIndex.Value + 1).ToList());
         if (string.IsNullOrWhiteSpace(content)) return null;
 
-        return (timeText, content);
+        return (bestTimeText, content);
     }
 
     private static string BuildLineText(List<OcrWordInfo> lineWords)
@@ -286,29 +309,62 @@ internal static class OcrEngine
         return gap >= typicalCharWidth * 1.2;
     }
 
-    private static bool LooksLikeTimeText(string text)
+    private static string? TryNormalizeTimeText(string text)
     {
-        if (string.IsNullOrWhiteSpace(text)) return false;
-        var compact = NormalizeTimeCandidate(text);
-        return Regex.IsMatch(compact, @"^(?:\d{1,2}:)?\d{1,2}:\d{2}:\d{2}(?:[.,]\d{1,3})?$|^\d{1,2}:\d{2}:\d{2}$");
+        if (string.IsNullOrWhiteSpace(text)) return null;
+
+        var normalized = NormalizeTimeCandidate(text);
+        if (normalized == null) return null;
+
+        var digits = new string(normalized.Where(char.IsDigit).ToArray());
+        if (digits.Length == 4)
+            return $"{digits[..2]}:{digits[2..4]}";
+
+        if (digits.Length == 6)
+            return $"{digits[..2]}:{digits[2..4]}:{digits[4..6]}";
+
+        if (digits.Length is >= 7 and <= 9)
+        {
+            var fraction = digits[6..];
+            return $"{digits[..2]}:{digits[2..4]}:{digits[4..6]}.{fraction}";
+        }
+
+        return null;
     }
 
-    private static string NormalizeTimeCandidate(string text)
+    private static string? NormalizeTimeCandidate(string text)
     {
         var sb = new StringBuilder(text.Length);
         foreach (var c in text)
         {
-            if (char.IsWhiteSpace(c) || c == ' ' || c == '　') continue;
-            if (c == '：' || c == '﹕' || c == '︰')
+            if (char.IsWhiteSpace(c) || c == ' ' || c == '　')
+                continue;
+
+            if (char.IsDigit(c))
+            {
+                sb.Append(c);
+                continue;
+            }
+
+            if (c == '：' || c == '﹕' || c == '︰' || c == ':' || c == '·' || c == '•' || c == '．' || c == '.')
             {
                 sb.Append(':');
                 continue;
             }
 
-            sb.Append(c);
+            if (c == ',' || c == '，')
+            {
+                sb.Append('.');
+                continue;
+            }
+
+            return null;
         }
 
-        return sb.ToString();
+        while (sb.Length > 0 && (sb[^1] == ':' || sb[^1] == '.'))
+            sb.Length--;
+
+        return sb.Length == 0 ? null : sb.ToString();
     }
 
     private static Windows.Media.Ocr.OcrEngine GetEngine(string languageTag)
