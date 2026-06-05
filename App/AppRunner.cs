@@ -33,6 +33,7 @@ internal static class AppRunner
         Logger.Info($"搜索文本: \"{args.SearchText}\" ({(args.CaseSensitive ? "区分大小写" : "不区分大小写")})");
         Logger.Info($"OCR 语言: {args.Language}");
         Logger.Info($"重试次数: {args.Retry}, 重试间隔: {args.RetryInterval}ms");
+        Logger.Info($"滚动识别间隔: {args.RollingIntervalMs}ms");
 
         for (int attempt = 1; attempt <= args.Retry; attempt++)
         {
@@ -145,7 +146,7 @@ internal static class AppRunner
                 matchRect.Value.Bottom,
                 Math.Max(1, screenshot.Width - matchRect.Value.Left),
                 Math.Max(1, screenshot.Height - matchRect.Value.Bottom));
-            Logger.Info($"二次 OCR 裁剪矩形: ({cropRect.X}, {cropRect.Y}) → ({cropRect.X + cropRect.Width}, {cropRect.Y + cropRect.Height}), 尺寸: {cropRect.Width}x{cropRect.Height}");
+            Logger.Info($"滚动 OCR 裁剪矩形: ({cropRect.X}, {cropRect.Y}) → ({cropRect.X + cropRect.Width}, {cropRect.Y + cropRect.Height}), 尺寸: {cropRect.Width}x{cropRect.Height}");
 
             if (args.SaveScreenshot)
             {
@@ -154,47 +155,172 @@ internal static class AppRunner
                 Logger.Info($"裁剪截图已保存: {path}");
             }
 
-            try
-            {
-                using var croppedBitmap = screenshot.Clone(cropRect, screenshot.PixelFormat);
-                screenshot.Dispose();
-
-                Logger.Info($"正在执行第二次 OCR (裁剪区域, 高精度, 语言: {args.Language})...");
-                var sw = Stopwatch.StartNew();
-                var detailedResult = await OcrEngine.RecognizeWithWordsAsync(
-                    croppedBitmap,
-                    args.Language,
-                    upscale: 8,
-                    preprocessMode: OcrEngine.OcrPreprocessMode.DetailPreserving);
-                sw.Stop();
-                Logger.Info($"第二次 OCR 完成, 耗时 {sw.ElapsedMilliseconds}ms, 识别到 {detailedResult.Text.Length} 个字符");
-
-                if (!string.IsNullOrWhiteSpace(detailedResult.Text))
-                {
-                    Logger.Info($"第二次 OCR 结果:\n--- 二次 OCR 开始 ---\n{detailedResult.Text}\n--- 二次 OCR 结束 ---");
-                }
-                else
-                {
-                    Logger.Warn("第二次 OCR 结果为空");
-                }
-
-                foreach (var line in detailedResult.Lines.Where(line => !string.IsNullOrWhiteSpace(line.RawText)))
-                {
-                    Logger.Info($"结构化行: TimeText=\"{line.TimeText}\", Content=\"{line.Content}\"");
-                }
-
-                return 0;
-            }
-            catch (Exception ex)
-            {
-                Logger.Error($"第二次 OCR 失败: {ex.Message}");
-                Logger.Debug($"OCR 异常堆栈: {ex}");
-                return 2;
-            }
+            screenshot.Dispose();
+            return await RunRollingRecognitionAsync(window, args, cropRect, attempt);
         }
 
         Logger.Error("已达到最大重试次数, 文本未找到");
         return 3;
+    }
+
+    private static async Task<int> RunRollingRecognitionAsync(WindowInfo window, Arguments args, Rectangle cropRect, int attempt)
+    {
+        using var cancellation = new CancellationTokenSource();
+        ConsoleCancelEventHandler? handler = (_, e) =>
+        {
+            e.Cancel = true;
+            if (!cancellation.IsCancellationRequested)
+            {
+                Logger.Info("收到停止信号，正在停止滚动识别...");
+                cancellation.Cancel();
+            }
+        };
+
+        Console.CancelKeyPress += handler;
+        Logger.Info("进入滚动识别模式，按 Ctrl+C 停止。");
+
+        List<string>? previousKeys = null;
+        int round = 1;
+
+        try
+        {
+            while (!cancellation.IsCancellationRequested)
+            {
+                Bitmap? screenshot = null;
+                try
+                {
+                    screenshot = ScreenCapture.CaptureWindow(window);
+                    var effectiveCropRect = ClampCropRect(cropRect, screenshot.Size);
+                    if (effectiveCropRect == Rectangle.Empty)
+                    {
+                        Logger.Warn("当前窗口尺寸不足以覆盖目标区域，等待下一轮...");
+                    }
+                    else
+                    {
+                        using var croppedBitmap = screenshot.Clone(effectiveCropRect, screenshot.PixelFormat);
+                        if (args.SaveScreenshot)
+                        {
+                            var path = ScreenCapture.SaveScreenshot(croppedBitmap, args.WindowTitle + "_rolling_crop", attempt * 100000 + round);
+                            Logger.Debug($"滚动裁剪截图已保存: {path}");
+                        }
+
+                        Logger.Debug($"正在执行滚动 OCR (第 {round} 次, 语言: {args.Language})...");
+                        var sw = Stopwatch.StartNew();
+                        var detailedResult = await OcrEngine.RecognizeWithWordsAsync(
+                            croppedBitmap,
+                            args.Language,
+                            upscale: 8,
+                            preprocessMode: OcrEngine.OcrPreprocessMode.DetailPreserving);
+                        sw.Stop();
+                        Logger.Debug($"滚动 OCR 第 {round} 次完成, 耗时 {sw.ElapsedMilliseconds}ms, 识别到 {detailedResult.Text.Length} 个字符");
+
+                        var currentLines = detailedResult.Lines
+                            .Where(line => !string.IsNullOrWhiteSpace(line.RawText))
+                            .ToList();
+                        var currentKeys = currentLines.Select(BuildLineKey).ToList();
+                        var newLines = ExtractNewLines(currentLines, currentKeys, previousKeys);
+
+                        foreach (var line in newLines)
+                        {
+                            Logger.Info($"结构化行: TimeText=\"{line.TimeText}\", Content=\"{line.Content}\"");
+                        }
+
+                        previousKeys = currentKeys;
+                    }
+                }
+                catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warn($"滚动识别本轮失败: {ex.Message}");
+                    Logger.Debug($"滚动识别异常堆栈: {ex}");
+                }
+                finally
+                {
+                    screenshot?.Dispose();
+                }
+
+                round++;
+                try
+                {
+                    await Task.Delay(args.RollingIntervalMs, cancellation.Token);
+                }
+                catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+                {
+                    break;
+                }
+            }
+
+            Logger.Info("滚动识别已停止。");
+            return 0;
+        }
+        finally
+        {
+            Console.CancelKeyPress -= handler;
+        }
+    }
+
+    private static Rectangle ClampCropRect(Rectangle cropRect, Size size)
+    {
+        if (size.Width <= 0 || size.Height <= 0) return Rectangle.Empty;
+        if (cropRect.X >= size.Width || cropRect.Y >= size.Height) return Rectangle.Empty;
+
+        int x = Math.Max(0, cropRect.X);
+        int y = Math.Max(0, cropRect.Y);
+        int width = Math.Min(cropRect.Width, size.Width - x);
+        int height = Math.Min(cropRect.Height, size.Height - y);
+        if (width <= 0 || height <= 0) return Rectangle.Empty;
+
+        return new Rectangle(x, y, width, height);
+    }
+
+    private static string BuildLineKey(OcrEngine.OcrLineInfo line)
+    {
+        var timeText = line.TimeText.Trim();
+        var content = line.Content.Trim();
+        if (!string.IsNullOrWhiteSpace(timeText))
+        {
+            return timeText + "|" + content;
+        }
+
+        return string.IsNullOrWhiteSpace(content) ? line.RawText.Trim() : content;
+    }
+
+    private static List<OcrEngine.OcrLineInfo> ExtractNewLines(
+        List<OcrEngine.OcrLineInfo> currentLines,
+        List<string> currentKeys,
+        List<string>? previousKeys)
+    {
+        if (previousKeys == null || previousKeys.Count == 0)
+        {
+            return currentLines;
+        }
+
+        int maxOverlap = Math.Min(previousKeys.Count, currentKeys.Count);
+        for (int overlap = maxOverlap; overlap >= 1; overlap--)
+        {
+            bool matched = true;
+            for (int i = 0; i < overlap; i++)
+            {
+                if (!string.Equals(previousKeys[previousKeys.Count - overlap + i], currentKeys[i], StringComparison.Ordinal))
+                {
+                    matched = false;
+                    break;
+                }
+            }
+
+            if (matched)
+            {
+                return currentLines.Skip(overlap).ToList();
+            }
+        }
+
+        var previousSet = new HashSet<string>(previousKeys, StringComparer.Ordinal);
+        return currentLines
+            .Where((line, index) => !previousSet.Contains(currentKeys[index]))
+            .ToList();
     }
 
     private static void PrintBanner()
@@ -294,6 +420,7 @@ internal static class AppRunner
 
         config.Retry = AskInteger("请输入重试次数 (1-10, 默认: 1): ", 1, 1, 10);
         config.RetryInterval = AskInteger("请输入重试间隔/毫秒 (100-60000, 默认: 1000): ", 1000, 100, 60000);
+        config.RollingIntervalMs = AskInteger("请输入滚动识别间隔/毫秒 (500-60000, 默认: 3000): ", 3000, 500, 60000);
         config.SaveScreenshot = AskYesNo("是否保存截图用于调试? (y/n, 默认: n): ", false);
 
         PrintSummary(config);
@@ -338,6 +465,7 @@ internal static class AppRunner
         Console.WriteLine($"  OCR 语言:     {config.Language}");
         Console.WriteLine($"  重试次数:     {config.Retry}");
         Console.WriteLine($"  重试间隔:     {config.RetryInterval}ms");
+        Console.WriteLine($"  滚动间隔:     {config.RollingIntervalMs}ms");
         Console.WriteLine($"  保存截图:     {(config.SaveScreenshot ? "是" : "否")}");
         Console.WriteLine("═══════════════════════════════");
         Console.WriteLine();

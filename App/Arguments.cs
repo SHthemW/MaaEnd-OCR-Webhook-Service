@@ -8,6 +8,7 @@ internal sealed class Arguments
     public bool SaveScreenshot { get; set; }
     public int Retry { get; set; } = 1;
     public int RetryInterval { get; set; } = 1000;
+    public int RollingIntervalMs { get; set; } = 3000;
     public bool CaseSensitive { get; set; }
     public string Language { get; set; } = "zh-Hans";
 
@@ -18,6 +19,7 @@ internal sealed class Arguments
         if (string.IsNullOrWhiteSpace(Language)) Language = "zh-Hans";
         Retry = Math.Clamp(Retry, 1, 10);
         RetryInterval = Math.Clamp(RetryInterval, 100, 60000);
+        RollingIntervalMs = Math.Clamp(RollingIntervalMs, 500, 60000);
         return true;
     }
 }
