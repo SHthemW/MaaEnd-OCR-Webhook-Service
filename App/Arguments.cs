@@ -11,7 +11,6 @@ internal sealed class Arguments
     public int RollingIntervalMs { get; set; } = 3000;
     public bool CaseSensitive { get; set; }
     public string Language { get; set; } = "zh-Hans";
-    public bool WebhookEnabled { get; set; }
     public string WebhookUrl { get; set; } = "";
     public string WebhookBody { get; set; } = "{\"content\":\"__CONTENT__\"}";
     public string WebhookContentType { get; set; } = "application/json";
@@ -22,8 +21,8 @@ internal sealed class Arguments
     private const string SummaryWebhookMode = "Summary";
     private const string AllWebhookMode = "All";
 
-    public bool ShouldPushRealtime => WebhookEnabled && (WebhookMode == RealtimeWebhookMode || WebhookMode == AllWebhookMode);
-    public bool ShouldPushSummary => WebhookEnabled && (WebhookMode == SummaryWebhookMode || WebhookMode == AllWebhookMode);
+    public bool ShouldPushRealtime => WebhookMode == RealtimeWebhookMode || WebhookMode == AllWebhookMode;
+    public bool ShouldPushSummary => WebhookMode == SummaryWebhookMode || WebhookMode == AllWebhookMode;
 
     public string WebhookModeDisplay => WebhookMode switch
     {
@@ -35,29 +34,56 @@ internal sealed class Arguments
 
     public bool Validate()
     {
-        if (string.IsNullOrWhiteSpace(WindowTitle)) return false;
-        if (string.IsNullOrWhiteSpace(SearchText)) return false;
-        if (string.IsNullOrWhiteSpace(Language)) Language = "zh-Hans";
-        if (string.IsNullOrWhiteSpace(WebhookContentType)) WebhookContentType = "application/json";
-        if (!TryNormalizeWebhookMode(WebhookMode, out var webhookMode))
+        return TryValidate(out _);
+    }
+
+    public bool TryValidate(out List<string> errors)
+    {
+        errors = [];
+
+        if (string.IsNullOrWhiteSpace(WindowTitle)) errors.Add("WindowTitle 不能为空");
+        if (string.IsNullOrWhiteSpace(SearchText)) errors.Add("SearchText 不能为空");
+        if (string.IsNullOrWhiteSpace(Language)) errors.Add("Language 不能为空");
+
+        if (Retry is < 1 or > 10) errors.Add("Retry 必须在 1 到 10 之间");
+        if (RetryInterval is < 100 or > 60000) errors.Add("RetryInterval 必须在 100 到 60000 毫秒之间");
+        if (RollingIntervalMs is < 500 or > 60000) errors.Add("RollingIntervalMs 必须在 500 到 60000 毫秒之间");
+
+        if (string.IsNullOrWhiteSpace(WebhookUrl))
         {
-            if (WebhookEnabled) return false;
-            webhookMode = SummaryWebhookMode;
+            errors.Add("WebhookUrl 不能为空");
+        }
+        else if (!IsValidHttpUrl(WebhookUrl))
+        {
+            errors.Add("WebhookUrl 必须是合法的 http/https URL");
         }
 
-        WebhookMode = webhookMode;
-        Retry = Math.Clamp(Retry, 1, 10);
-        RetryInterval = Math.Clamp(RetryInterval, 100, 60000);
-        RollingIntervalMs = Math.Clamp(RollingIntervalMs, 500, 60000);
-        WebhookTimeoutMs = Math.Clamp(WebhookTimeoutMs, 1000, 60000);
-        if (WebhookEnabled)
+        if (string.IsNullOrWhiteSpace(WebhookBody))
         {
-            if (string.IsNullOrWhiteSpace(WebhookUrl)) return false;
-            if (string.IsNullOrWhiteSpace(WebhookBody)) return false;
-            if (!WebhookBody.Contains("__CONTENT__", StringComparison.Ordinal)) return false;
+            errors.Add("WebhookBody 不能为空");
+        }
+        else if (!WebhookBody.Contains("__CONTENT__", StringComparison.Ordinal))
+        {
+            errors.Add("WebhookBody 必须包含 __CONTENT__ 占位符");
         }
 
-        return true;
+        if (string.IsNullOrWhiteSpace(WebhookContentType)) errors.Add("WebhookContentType 不能为空");
+        if (WebhookTimeoutMs is < 1000 or > 60000) errors.Add("WebhookTimeoutMs 必须在 1000 到 60000 毫秒之间");
+
+        if (string.IsNullOrWhiteSpace(WebhookMode))
+        {
+            errors.Add("WebhookMode 不能为空");
+        }
+        else if (TryNormalizeWebhookMode(WebhookMode, out var webhookMode))
+        {
+            WebhookMode = webhookMode;
+        }
+        else
+        {
+            errors.Add("WebhookMode 必须是 Realtime、Summary 或 All");
+        }
+
+        return errors.Count == 0;
     }
 
     public static bool TryNormalizeWebhookMode(string? value, out string normalized)
@@ -76,5 +102,11 @@ internal sealed class Arguments
         };
 
         return !string.IsNullOrWhiteSpace(normalized);
+    }
+
+    private static bool IsValidHttpUrl(string value)
+    {
+        return Uri.TryCreate(value, UriKind.Absolute, out var uri)
+            && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
     }
 }

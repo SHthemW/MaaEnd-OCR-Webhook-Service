@@ -34,9 +34,7 @@ internal static class AppRunner
         Logger.Info($"OCR 语言: {args.Language}");
         Logger.Info($"重试次数: {args.Retry}, 重试间隔: {args.RetryInterval}ms");
         Logger.Info($"滚动识别间隔: {args.RollingIntervalMs}ms");
-        Logger.Info(args.WebhookEnabled
-            ? $"Webhook 推送: 已启用 ({args.WebhookUrl}, {args.WebhookContentType}, 模式 {args.WebhookModeDisplay}, 超时 {args.WebhookTimeoutMs}ms)"
-            : "Webhook 推送: 未启用");
+        Logger.Info($"Webhook 推送: 已启用 ({args.WebhookUrl}, {args.WebhookContentType}, 模式 {args.WebhookModeDisplay}, 超时 {args.WebhookTimeoutMs}ms)");
 
         for (int attempt = 1; attempt <= args.Retry; attempt++)
         {
@@ -170,7 +168,7 @@ internal static class AppRunner
     {
         var outputFilter = new RollingOcrOutputFilter();
         var bufferedLines = new List<OcrEngine.OcrLineInfo>();
-        var webhookDispatcher = args.WebhookEnabled ? new WebhookDispatcher(args) : null;
+        var webhookDispatcher = new WebhookDispatcher(args);
         using var cancellation = new CancellationTokenSource();
         ConsoleCancelEventHandler? handler = (_, e) =>
         {
@@ -231,7 +229,7 @@ internal static class AppRunner
                         {
                             bufferedLines.Add(line.Source);
                             Logger.Info(FormatRollingOcrEvent(line));
-                            if (webhookDispatcher != null && args.ShouldPushRealtime)
+                            if (args.ShouldPushRealtime)
                             {
                                 var finalContent = line.Source.GetFinalContent();
                                 if (!string.IsNullOrWhiteSpace(finalContent))
@@ -310,13 +308,8 @@ internal static class AppRunner
 
     private static async Task DispatchBufferedRollingOcrEventsAsync(
         List<OcrEngine.OcrLineInfo> bufferedLines,
-        WebhookDispatcher? webhookDispatcher)
+        WebhookDispatcher webhookDispatcher)
     {
-        if (webhookDispatcher == null)
-        {
-            return;
-        }
-
         if (bufferedLines.Count == 0)
         {
             Logger.Info("无缓存 OCR 输出, 跳过 Webhook 推送。");
@@ -355,7 +348,11 @@ internal static class AppRunner
             {
                 var json = File.ReadAllText(configPath, Encoding.UTF8);
                 var config = JsonSerializer.Deserialize<Arguments>(json);
-                if (config != null && config.Validate())
+                if (config == null)
+                {
+                    Logger.Warn("配置文件格式无效, 进入交互式配置...");
+                }
+                else if (config.TryValidate(out var validationErrors))
                 {
                     Logger.Info($"已加载配置文件: {configPath}");
                     PrintSummary(config);
@@ -376,7 +373,11 @@ internal static class AppRunner
                 }
                 else
                 {
-                    Logger.Warn("配置文件格式无效, 进入交互式配置...");
+                    Logger.Warn("配置文件存在空值或非法值, 进入交互式配置...");
+                    foreach (var error in validationErrors)
+                    {
+                        Logger.Warn($"配置错误: {error}");
+                    }
                 }
             }
             catch (Exception ex)
@@ -436,23 +437,23 @@ internal static class AppRunner
         config.RetryInterval = AskInteger("请输入重试间隔/毫秒 (100-60000, 默认: 1000): ", 1000, 100, 60000);
         config.RollingIntervalMs = AskInteger("请输入滚动识别间隔/毫秒 (500-60000, 默认: 3000): ", 3000, 500, 60000);
         config.SaveScreenshot = AskYesNo("是否保存截图用于调试? (y/n, 默认: n): ", false);
-        config.WebhookEnabled = AskYesNo("是否启用 Webhook 推送? (y/n, 默认: n): ", false);
-        if (config.WebhookEnabled)
+        config.WebhookUrl = AskWebhookUrl(config.WebhookUrl);
+
+        config.WebhookBody = AskWebhookBody(config.WebhookBody);
+
+        config.WebhookContentType = AskRequiredString($"请输入 Webhook Content-Type (默认: {config.WebhookContentType}): ", config.WebhookContentType);
+
+        config.WebhookTimeoutMs = AskInteger("请输入 Webhook 超时/毫秒 (1000-60000, 默认: 5000): ", 5000, 1000, 60000);
+        config.WebhookMode = AskWebhookMode();
+
+        if (!config.TryValidate(out var validationErrors))
         {
-            Console.Write($"请输入 Webhook URL (默认: {config.WebhookUrl}): ");
-            input = Console.ReadLine()?.Trim() ?? "";
-            if (!string.IsNullOrWhiteSpace(input)) config.WebhookUrl = input;
+            foreach (var error in validationErrors)
+            {
+                Logger.Error($"配置错误: {error}");
+            }
 
-            Console.Write($"请输入 Webhook Body 模板 (需包含 __CONTENT__, 默认: {config.WebhookBody}): ");
-            input = Console.ReadLine() ?? "";
-            if (!string.IsNullOrWhiteSpace(input)) config.WebhookBody = input.Trim();
-
-            Console.Write($"请输入 Webhook Content-Type (默认: {config.WebhookContentType}): ");
-            input = Console.ReadLine()?.Trim() ?? "";
-            if (!string.IsNullOrWhiteSpace(input)) config.WebhookContentType = input;
-
-            config.WebhookTimeoutMs = AskInteger("请输入 Webhook 超时/毫秒 (1000-60000, 默认: 5000): ", 5000, 1000, 60000);
-            config.WebhookMode = AskWebhookMode();
+            return null;
         }
 
         PrintSummary(config);
@@ -483,6 +484,55 @@ internal static class AppRunner
             if (string.IsNullOrWhiteSpace(input)) return defaultValue;
             if (int.TryParse(input, out var value) && value >= min && value <= max) return value;
             Logger.Warn($"输入无效, 请输入 {min} 到 {max} 之间的整数");
+        }
+    }
+
+    private static string AskWebhookUrl(string defaultValue)
+    {
+        while (true)
+        {
+            Console.Write($"请输入 Webhook URL (必填, 默认: {defaultValue}): ");
+            var input = Console.ReadLine()?.Trim() ?? "";
+            var value = string.IsNullOrWhiteSpace(input) ? defaultValue : input;
+            if (Uri.TryCreate(value, UriKind.Absolute, out var uri)
+                && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps))
+            {
+                return value;
+            }
+
+            Logger.Warn("输入无效, Webhook URL 必须是合法的 http/https URL");
+        }
+    }
+
+    private static string AskWebhookBody(string defaultValue)
+    {
+        while (true)
+        {
+            Console.Write($"请输入 Webhook Body 模板 (需包含 __CONTENT__, 默认: {defaultValue}): ");
+            var input = Console.ReadLine() ?? "";
+            var value = string.IsNullOrWhiteSpace(input) ? defaultValue : input.Trim();
+            if (!string.IsNullOrWhiteSpace(value) && value.Contains("__CONTENT__", StringComparison.Ordinal))
+            {
+                return value;
+            }
+
+            Logger.Warn("输入无效, Webhook Body 模板不能为空且必须包含 __CONTENT__");
+        }
+    }
+
+    private static string AskRequiredString(string prompt, string defaultValue)
+    {
+        while (true)
+        {
+            Console.Write(prompt);
+            var input = Console.ReadLine()?.Trim() ?? "";
+            var value = string.IsNullOrWhiteSpace(input) ? defaultValue : input;
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value;
+            }
+
+            Logger.Warn("输入无效, 该配置不能为空");
         }
     }
 
@@ -524,15 +574,12 @@ internal static class AppRunner
         Console.WriteLine($"  重试间隔:     {config.RetryInterval}ms");
         Console.WriteLine($"  滚动间隔:     {config.RollingIntervalMs}ms");
         Console.WriteLine($"  保存截图:     {(config.SaveScreenshot ? "是" : "否")}");
-        Console.WriteLine($"  Webhook:      {(config.WebhookEnabled ? "启用" : "禁用")}");
-        if (config.WebhookEnabled)
-        {
-            Console.WriteLine($"  Webhook URL:  {config.WebhookUrl}");
-            Console.WriteLine($"  Content-Type: {config.WebhookContentType}");
-            Console.WriteLine($"  推送方式:     {config.WebhookModeDisplay}");
-            Console.WriteLine($"  推送超时:     {config.WebhookTimeoutMs}ms");
-            Console.WriteLine($"  Body 模板:    {config.WebhookBody}");
-        }
+        Console.WriteLine("  Webhook:      启用");
+        Console.WriteLine($"  Webhook URL:  {config.WebhookUrl}");
+        Console.WriteLine($"  Content-Type: {config.WebhookContentType}");
+        Console.WriteLine($"  推送方式:     {config.WebhookModeDisplay}");
+        Console.WriteLine($"  推送超时:     {config.WebhookTimeoutMs}ms");
+        Console.WriteLine($"  Body 模板:    {config.WebhookBody}");
         Console.WriteLine("═══════════════════════════════");
         Console.WriteLine();
     }
