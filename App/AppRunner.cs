@@ -93,7 +93,7 @@ internal static class AppRunner
 
                 if (!string.IsNullOrWhiteSpace(firstResult.Text))
                 {
-                    Logger.Info($"第一次 OCR 原文:\n--- OCR 开始 ---\n{firstResult.Text}\n--- OCR 结束 ---");
+                    Logger.InfoLight($"第一次 OCR 原文:\n--- OCR 开始 ---\n{firstResult.Text}\n--- OCR 结束 ---");
                 }
                 else
                 {
@@ -213,7 +213,7 @@ internal static class AppRunner
                             preprocessMode: OcrEngine.OcrPreprocessMode.DetailPreserving);
                         sw.Stop();
                         Logger.Debug($"滚动 OCR 第 {round} 次完成, 耗时 {sw.ElapsedMilliseconds}ms, 识别到 {detailedResult.Text.Length} 个字符");
-                        Logger.Info($"滚动 OCR 第 {round} 次原文:\n--- OCR 开始 ---\n{FormatOcrTextForLog(detailedResult.Text)}\n--- OCR 结束 ---");
+                        Logger.InfoLight($"滚动 OCR 第 {round} 次原文:\n--- OCR 开始 ---\n{FormatOcrTextForLog(detailedResult.Text)}\n--- OCR 结束 ---");
 
                         var filterResult = outputFilter.Filter(detailedResult.Lines);
                         if (!filterResult.Accepted)

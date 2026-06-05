@@ -13,6 +13,7 @@ internal static class Logger
     private static readonly LogLevel MinimumLevel = LogLevel.Info;
 
     public static void Info(string message) => Log("INFO", message, ConsoleColor.Gray);
+    public static void InfoLight(string message) => Log("INFO", message, ConsoleColor.DarkGray);
     public static void Warn(string message) => Log("WARN", message, ConsoleColor.Yellow);
     public static void Error(string message) => Log("ERROR", message, ConsoleColor.Red);
     public static void Debug(string message) => Log("DEBUG", message, ConsoleColor.DarkGray);
