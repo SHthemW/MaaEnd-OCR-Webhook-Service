@@ -93,7 +93,7 @@ internal static class AppRunner
 
                 if (!string.IsNullOrWhiteSpace(firstResult.Text))
                 {
-                    Logger.Debug($"第一次 OCR 原文:\n--- OCR 开始 ---\n{firstResult.Text}\n--- OCR 结束 ---");
+                    Logger.Info($"第一次 OCR 原文:\n--- OCR 开始 ---\n{firstResult.Text}\n--- OCR 结束 ---");
                 }
                 else
                 {
@@ -213,6 +213,7 @@ internal static class AppRunner
                             preprocessMode: OcrEngine.OcrPreprocessMode.DetailPreserving);
                         sw.Stop();
                         Logger.Debug($"滚动 OCR 第 {round} 次完成, 耗时 {sw.ElapsedMilliseconds}ms, 识别到 {detailedResult.Text.Length} 个字符");
+                        Logger.Info($"滚动 OCR 第 {round} 次原文:\n--- OCR 开始 ---\n{FormatOcrTextForLog(detailedResult.Text)}\n--- OCR 结束 ---");
 
                         var filterResult = outputFilter.Filter(detailedResult.Lines);
                         if (!filterResult.Accepted)
@@ -223,7 +224,7 @@ internal static class AppRunner
 
                         foreach (var line in filterResult.NewLines)
                         {
-                            Logger.Info($"结构化行: TimeText=\"{line.TimeText}\", Content=\"{line.Content}\"");
+                            Logger.Info($"OCR事件[{line.Category}]: TimeText=\"{line.TimeText}\", Content=\"{line.Content}\"");
                         }
                     }
                 }
@@ -274,6 +275,8 @@ internal static class AppRunner
 
         return new Rectangle(x, y, width, height);
     }
+
+    private static string FormatOcrTextForLog(string? text) => string.IsNullOrWhiteSpace(text) ? "<EMPTY>" : text;
 
     private static void PrintBanner()
     {
