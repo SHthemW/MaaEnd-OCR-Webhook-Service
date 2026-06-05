@@ -202,14 +202,15 @@ internal static class OcrEngine
             var orderedWords = visualLine.Words.OrderBy(word => word.X).ToList();
             if (orderedWords.Count == 0) continue;
 
-            var rawText = BuildLineText(orderedWords);
+            var rawText = NormalizeOcrSpacing(BuildLineText(orderedWords));
             var split = TrySplitTimeAndContent(orderedWords);
+            var content = split?.Content ?? rawText;
 
             result.Add(new OcrLineInfo
             {
                 RawText = rawText,
                 TimeText = split?.TimeText ?? string.Empty,
-                Content = split?.Content ?? rawText,
+                Content = NormalizeOcrSpacing(content),
                 Words = orderedWords
             });
         }
@@ -226,8 +227,8 @@ internal static class OcrEngine
             if (string.IsNullOrWhiteSpace(line.TimeText) && merged.Count > 0)
             {
                 var previous = merged[^1];
-                previous.RawText += line.RawText;
-                previous.Content += line.Content;
+                previous.RawText = NormalizeOcrSpacing(CombineContinuationText(previous.RawText, line.RawText));
+                previous.Content = NormalizeOcrSpacing(CombineContinuationText(previous.Content, line.Content));
                 previous.Words.AddRange(line.Words);
                 continue;
             }
@@ -236,6 +237,54 @@ internal static class OcrEngine
         }
 
         return merged;
+    }
+
+    private static string CombineContinuationText(string left, string right)
+    {
+        left = left.TrimEnd();
+        right = right.TrimStart();
+
+        if (string.IsNullOrEmpty(left)) return right;
+        if (string.IsNullOrEmpty(right)) return left;
+
+        char leftLast = left[^1];
+        char rightFirst = right[0];
+        if (ShouldOmitSeparator(leftLast, rightFirst))
+        {
+            return left + right;
+        }
+
+        return left + " " + right;
+    }
+
+    private static bool ShouldOmitSeparator(char leftLast, char rightFirst)
+    {
+        return IsOpeningPunctuation(leftLast)
+            || IsClosingPunctuation(rightFirst)
+            || leftLast == ':'
+            || leftLast == '：'
+            || rightFirst == ','
+            || rightFirst == '，';
+    }
+
+    private static bool IsOpeningPunctuation(char c)
+    {
+        return c == '('
+            || c == '（'
+            || c == '['
+            || c == '［'
+            || c == '{'
+            || c == '｛';
+    }
+
+    private static bool IsClosingPunctuation(char c)
+    {
+        return c == ')'
+            || c == '）'
+            || c == ']'
+            || c == '］'
+            || c == '}'
+            || c == '｝';
     }
 
     private static (string TimeText, string Content)? TrySplitTimeAndContent(List<OcrWordInfo> orderedWords)
@@ -307,6 +356,19 @@ internal static class OcrEngine
         double currentCharWidth = current.Text.Length > 0 ? (double)current.Width / current.Text.Length : current.Width;
         double typicalCharWidth = Math.Max(4.0, Math.Min(previousCharWidth, currentCharWidth));
         return gap >= typicalCharWidth * 1.2;
+    }
+
+    private static string NormalizeOcrSpacing(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return string.Empty;
+
+        var normalized = Regex.Replace(text, @"\s+", " ").Trim();
+        normalized = Regex.Replace(normalized, @"(?<=[\p{IsCJKUnifiedIdeographs}\p{IsCJKSymbolsandPunctuation}\p{IsHalfwidthandFullwidthForms}])\s+(?=[\p{IsCJKUnifiedIdeographs}\p{IsCJKSymbolsandPunctuation}\p{IsHalfwidthandFullwidthForms}])", "");
+        normalized = Regex.Replace(normalized, @"([（\(\[［\{｛])\s+", "$1");
+        normalized = Regex.Replace(normalized, @"\s+([）\)\]］\}｝])", "$1");
+        normalized = Regex.Replace(normalized, @"\s+([，。；：！？、])", "$1");
+        normalized = Regex.Replace(normalized, @"([，。；：！？、])\s+", "$1");
+        return normalized;
     }
 
     private static string? TryNormalizeTimeText(string text)
