@@ -31,10 +31,27 @@ internal static class OcrEngine
 
     public class OcrLineInfo
     {
+        private const string UnknownTimeText = "??:??:??";
+
         public string RawText { get; set; } = "";
         public string TimeText { get; set; } = "";
         public string Content { get; set; } = "";
         public List<OcrWordInfo> Words { get; set; } = new();
+
+        public static string GetUnknownTimeText()
+        {
+            return UnknownTimeText;
+        }
+
+        public string GetDisplayTimeText()
+        {
+            return string.IsNullOrWhiteSpace(TimeText) ? UnknownTimeText : TimeText;
+        }
+
+        public string GetFinalContent()
+        {
+            return $"{GetDisplayTimeText()} {Content}";
+        }
     }
 
     public enum OcrPreprocessMode

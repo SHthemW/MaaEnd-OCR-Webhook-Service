@@ -166,6 +166,7 @@ internal static class AppRunner
     private static async Task<int> RunRollingRecognitionAsync(WindowInfo window, Arguments args, Rectangle cropRect, int attempt)
     {
         var outputFilter = new RollingOcrOutputFilter();
+        var bufferedLines = new List<OcrEngine.OcrLineInfo>();
         using var cancellation = new CancellationTokenSource();
         ConsoleCancelEventHandler? handler = (_, e) =>
         {
@@ -224,7 +225,8 @@ internal static class AppRunner
 
                         foreach (var line in filterResult.NewLines)
                         {
-                            Logger.Info($"OCR事件[{line.Category}]: TimeText=\"{line.TimeText}\", Content=\"{line.Content}\"");
+                            bufferedLines.Add(line.Source);
+                            Logger.Info(FormatRollingOcrEvent(line));
                         }
                     }
                 }
@@ -254,6 +256,7 @@ internal static class AppRunner
             }
 
             Logger.Info("滚动识别已停止。");
+            PrintBufferedRollingOcrEvents(bufferedLines);
             return 0;
         }
         finally
@@ -277,6 +280,17 @@ internal static class AppRunner
     }
 
     private static string FormatOcrTextForLog(string? text) => string.IsNullOrWhiteSpace(text) ? "<EMPTY>" : text;
+
+    private static string FormatRollingOcrEvent(RollingOcrOutputFilter.OutputLine line)
+        => $"OCR事件[{line.Category}]: TimeText=\"{line.TimeText}\", Content=\"{line.Content}\"";
+
+    private static void PrintBufferedRollingOcrEvents(List<OcrEngine.OcrLineInfo> bufferedLines)
+    {
+        foreach (var line in bufferedLines)
+        {
+            Console.WriteLine(line.GetFinalContent());
+        }
+    }
 
     private static void PrintBanner()
     {

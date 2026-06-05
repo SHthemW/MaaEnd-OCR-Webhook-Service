@@ -147,7 +147,7 @@ internal sealed class RollingOcrOutputFilter
 
         if (string.IsNullOrWhiteSpace(timeText))
         {
-            timeText = ExtractLooseTime(rawText) ?? string.Empty;
+            timeText = ExtractLooseTime(rawText) ?? OcrEngine.OcrLineInfo.GetUnknownTimeText();
         }
 
         return new OutputLine(
@@ -155,7 +155,14 @@ internal sealed class RollingOcrOutputFilter
             content,
             category,
             canonicalContent,
-            $"{category}|{canonicalContent}");
+            $"{category}|{canonicalContent}",
+            new OcrEngine.OcrLineInfo
+            {
+                RawText = line.RawText,
+                TimeText = timeText,
+                Content = content,
+                Words = line.Words
+            });
     }
 
     private static bool TryExtractLeadingTime(string text, out string timeText, out string content)
@@ -180,59 +187,56 @@ internal sealed class RollingOcrOutputFilter
     {
         if (string.IsNullOrWhiteSpace(text)) return string.Empty;
 
-        var digits = new StringBuilder(8);
-        foreach (var c in text)
+        var normalized = NormalizeText(text);
+        var parts = Regex.Split(normalized, "[：:﹕︰．.·•,，]+")
+            .Where(part => !string.IsNullOrWhiteSpace(part))
+            .ToList();
+
+        if (parts.Count >= 2)
         {
-            if (TryNormalizeDigit(c, out var digit))
-            {
-                digits.Append(digit);
-                continue;
-            }
-
-            if (char.IsWhiteSpace(c) || IsTimeSeparator(c))
-            {
-                continue;
-            }
-
-            // 非法字符直接视为“不可靠时间”，但不阻止内容继续输出
-            return string.Empty;
+            var hh = NormalizeTimeComponent(parts.ElementAtOrDefault(0));
+            var mm = NormalizeTimeComponent(parts.ElementAtOrDefault(1));
+            var ss = NormalizeTimeComponent(parts.ElementAtOrDefault(2));
+            return $"{hh}:{mm}:{ss}";
         }
 
-        if (digits.Length == 4)
+        var flatChars = normalized
+            .Where(c => !char.IsWhiteSpace(c) && !IsTimeSeparator(c))
+            .Select(c => TryNormalizeDigit(c, out var digit) ? digit : '?')
+            .ToList();
+
+        if (flatChars.Count == 0) return string.Empty;
+        while (flatChars.Count < 6)
         {
-            string hourText = digits.ToString(0, 2);
-            string minuteText = digits.ToString(2, 2);
-            if (!IsValidHourMinute(hourText, minuteText)) return string.Empty;
-            return $"{hourText}:{minuteText}";
+            flatChars.Add('?');
         }
 
-        if (digits.Length == 6)
+        return $"{flatChars[0]}{flatChars[1]}:{flatChars[2]}{flatChars[3]}:{flatChars[4]}{flatChars[5]}";
+    }
+
+    private static string NormalizeTimeComponent(string? part)
+    {
+        if (string.IsNullOrWhiteSpace(part)) return "??";
+
+        var chars = part
+            .Where(c => !char.IsWhiteSpace(c))
+            .Select(c => TryNormalizeDigit(c, out var digit) ? digit : '?')
+            .Take(2)
+            .ToList();
+
+        while (chars.Count < 2)
         {
-            string hourText = digits.ToString(0, 2);
-            string minuteText = digits.ToString(2, 2);
-            string secondText = digits.ToString(4, 2);
-            if (!IsValidTimeComponents(hourText, minuteText, secondText)) return string.Empty;
-            return $"{hourText}:{minuteText}:{secondText}";
+            chars.Add('?');
         }
 
-        if (digits.Length is >= 7 and <= 9)
-        {
-            string hourText = digits.ToString(0, 2);
-            string minuteText = digits.ToString(2, 2);
-            string secondText = digits.ToString(4, 2);
-            if (!IsValidTimeComponents(hourText, minuteText, secondText)) return string.Empty;
-            string fraction = digits.ToString(6, digits.Length - 6);
-            return $"{hourText}:{minuteText}:{secondText}.{fraction}";
-        }
-
-        return string.Empty;
+        return new string(chars.ToArray());
     }
 
     private static string? ExtractLooseTime(string text)
     {
         var match = LeadingTimePattern.Match(text);
         if (!match.Success) return null;
-        var candidate = NormalizeText(match.Groups["time"].Value);
+        var candidate = NormalizeTimeText(match.Groups["time"].Value);
         return string.IsNullOrWhiteSpace(candidate) ? null : candidate;
     }
 
@@ -497,13 +501,15 @@ internal sealed class RollingOcrOutputFilter
         string content,
         LineCategory category,
         string canonicalContent,
-        string signature)
+        string signature,
+        OcrEngine.OcrLineInfo source)
     {
         public string TimeText { get; } = timeText;
         public string Content { get; } = content;
         public LineCategory Category { get; } = category;
         public string CanonicalContent { get; } = canonicalContent;
         public string Signature { get; } = signature;
+        public OcrEngine.OcrLineInfo Source { get; } = source;
     }
 
     internal enum LineCategory
