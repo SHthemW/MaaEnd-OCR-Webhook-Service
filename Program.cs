@@ -5,6 +5,7 @@ using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.WindowsRuntime;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Windows.Globalization;
 using Windows.Graphics.Imaging;
 using Windows.Media.Ocr;
@@ -187,6 +188,9 @@ static async Task<int> RunOcrDetectionAsync(Arguments args)
                 Logger.Info($"第二次 OCR 结果:\n--- 二次 OCR 开始 ---\n{detailedResult.Text}\n--- 二次 OCR 结束 ---");
             else
                 Logger.Warn("第二次 OCR 结果为空");
+
+            foreach (var line in detailedResult.Lines.Where(line => !string.IsNullOrWhiteSpace(line.RawText)))
+                Logger.Info($"结构化行: TimeText=\"{line.TimeText}\", Content=\"{line.Content}\"");
 
             return 0;
         }
@@ -915,10 +919,20 @@ static class OcrEngine
         public int Height { get; set; }
     }
 
-    /// <summary>OCR 识别结果：文本 + 单词坐标</summary>
+    /// <summary>OCR 识别结果：文本 + 单词坐标 + 视觉行</summary>
     public class OcrResultData
     {
         public string Text { get; set; } = "";
+        public List<OcrWordInfo> Words { get; set; } = new();
+        public List<OcrLineInfo> Lines { get; set; } = new();
+    }
+
+    /// <summary>OCR 视觉行：原始文本 + 时间段 + 内容段</summary>
+    public class OcrLineInfo
+    {
+        public string RawText { get; set; } = "";
+        public string TimeText { get; set; } = "";
+        public string Content { get; set; } = "";
         public List<OcrWordInfo> Words { get; set; } = new();
     }
 
@@ -971,9 +985,21 @@ static class OcrEngine
             }
         }
 
-        var orderedWords = OrderWordsByVisualLines(words);
-        var text = BuildVisualText(orderedWords);
-        return new OcrResultData { Text = text, Words = orderedWords };
+        var visualLines = GroupWordsByVisualLines(words);
+        var orderedWords = visualLines
+            .SelectMany(line => line.Words.OrderBy(word => word.X))
+            .ToList();
+        var parsedLines = BuildLineInfos(visualLines);
+        var text = string.Join(Environment.NewLine, parsedLines
+            .Select(line => line.RawText)
+            .Where(line => !string.IsNullOrWhiteSpace(line)));
+
+        return new OcrResultData
+        {
+            Text = text,
+            Words = orderedWords,
+            Lines = parsedLines
+        };
     }
 
     /// <summary>
@@ -1062,13 +1088,13 @@ static class OcrEngine
         }
     }
 
-    private static List<OcrWordInfo> OrderWordsByVisualLines(List<OcrWordInfo> words)
+    private static List<VisualLine> GroupWordsByVisualLines(List<OcrWordInfo> words)
     {
-        if (words.Count <= 1) return new List<OcrWordInfo>(words);
+        if (words.Count == 0) return new List<VisualLine>();
 
         var sorted = words
-            .OrderBy(w => w.Y + w.Height / 2.0)
-            .ThenBy(w => w.X)
+            .OrderBy(word => word.Y + word.Height / 2.0)
+            .ThenBy(word => word.X)
             .ToList();
 
         var lines = new List<VisualLine>();
@@ -1084,10 +1110,7 @@ static class OcrEngine
             line.Add(word);
         }
 
-        return lines
-            .OrderBy(line => line.CenterY)
-            .SelectMany(line => line.Words.OrderBy(word => word.X))
-            .ToList();
+        return lines.OrderBy(line => line.CenterY).ToList();
     }
 
     private static bool IsSameVisualLine(VisualLine line, OcrWordInfo word)
@@ -1097,39 +1120,66 @@ static class OcrEngine
         return Math.Abs(line.CenterY - wordCenterY) <= tolerance;
     }
 
-    private static string BuildVisualText(List<OcrWordInfo> orderedWords)
+    private static List<OcrLineInfo> BuildLineInfos(List<VisualLine> visualLines)
     {
-        if (orderedWords.Count == 0) return string.Empty;
+        var result = new List<OcrLineInfo>();
 
-        var textLines = new List<string>();
-        var currentLine = new List<OcrWordInfo>();
-
-        foreach (var word in orderedWords)
+        foreach (var visualLine in visualLines)
         {
-            if (currentLine.Count == 0 || IsSameVisualLine(currentLine, word))
-            {
-                currentLine.Add(word);
-                continue;
-            }
+            var orderedWords = visualLine.Words.OrderBy(word => word.X).ToList();
+            if (orderedWords.Count == 0) continue;
 
-            textLines.Add(BuildLineText(currentLine));
-            currentLine.Clear();
-            currentLine.Add(word);
+            var rawText = BuildLineText(orderedWords);
+            var split = TrySplitTimeAndContent(orderedWords);
+
+            result.Add(new OcrLineInfo
+            {
+                RawText = rawText,
+                TimeText = split?.TimeText ?? string.Empty,
+                Content = split?.Content ?? rawText,
+                Words = orderedWords
+            });
         }
 
-        if (currentLine.Count > 0)
-            textLines.Add(BuildLineText(currentLine));
-
-        return string.Join(Environment.NewLine, textLines.Where(line => !string.IsNullOrWhiteSpace(line)));
+        return result;
     }
 
-    private static bool IsSameVisualLine(List<OcrWordInfo> currentLine, OcrWordInfo word)
+    private static (string TimeText, string Content)? TrySplitTimeAndContent(List<OcrWordInfo> orderedWords)
     {
-        double averageCenterY = currentLine.Average(item => item.Y + item.Height / 2.0);
-        double averageHeight = currentLine.Average(item => item.Height);
-        double wordCenterY = word.Y + word.Height / 2.0;
-        double tolerance = Math.Max(averageHeight, word.Height) * 0.6;
-        return Math.Abs(averageCenterY - wordCenterY) <= tolerance;
+        if (orderedWords.Count < 2) return null;
+
+        int? bestSplitIndex = null;
+        double bestGapScore = 0;
+
+        for (int i = 0; i < orderedWords.Count - 1; i++)
+        {
+            var previous = orderedWords[i];
+            var current = orderedWords[i + 1];
+            int gap = current.X - (previous.X + previous.Width);
+            if (gap <= 0) continue;
+
+            var leftText = BuildLineText(orderedWords.Take(i + 1).ToList());
+            if (!LooksLikeTimeText(leftText)) continue;
+
+            double previousCharWidth = previous.Text.Length > 0 ? (double)previous.Width / previous.Text.Length : previous.Width;
+            double currentCharWidth = current.Text.Length > 0 ? (double)current.Width / current.Text.Length : current.Width;
+            double typicalCharWidth = Math.Max(4.0, Math.Min(previousCharWidth, currentCharWidth));
+            double gapScore = gap / typicalCharWidth;
+
+            if (gapScore > bestGapScore)
+            {
+                bestGapScore = gapScore;
+                bestSplitIndex = i;
+            }
+        }
+
+        if (bestSplitIndex == null || bestGapScore < 1.8) return null;
+
+        string timeText = BuildLineText(orderedWords.Take(bestSplitIndex.Value + 1).ToList());
+        string content = BuildLineText(orderedWords.Skip(bestSplitIndex.Value + 1).ToList());
+        if (string.IsNullOrWhiteSpace(content)) return null;
+
+        return (timeText, content);
     }
 
     private static string BuildLineText(List<OcrWordInfo> lineWords)
@@ -1164,6 +1214,34 @@ static class OcrEngine
 
         // 跨列的大空隙补空格，避免“19:14:11未搜索到任何窗口”粘连在一起。
         return gap >= typicalCharWidth * 1.2;
+    }
+
+    private static bool LooksLikeTimeText(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+
+        var compact = NormalizeTimeCandidate(text);
+        return Regex.IsMatch(compact, @"^(?:\d{1,2}:)?\d{1,2}:\d{2}:\d{2}(?:[.,]\d{1,3})?$|^\d{1,2}:\d{2}:\d{2}$");
+    }
+
+    private static string NormalizeTimeCandidate(string text)
+    {
+        var sb = new StringBuilder(text.Length);
+        foreach (var c in text)
+        {
+            if (char.IsWhiteSpace(c) || c == ' ' || c == '　')
+                continue;
+
+            if (c == '：' || c == '﹕' || c == '︰')
+            {
+                sb.Append(':');
+                continue;
+            }
+
+            sb.Append(c);
+        }
+
+        return sb.ToString();
     }
 
     private static Windows.Media.Ocr.OcrEngine GetEngine(string languageTag)
