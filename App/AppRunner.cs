@@ -35,7 +35,7 @@ internal static class AppRunner
         Logger.Info($"重试次数: {args.Retry}, 重试间隔: {args.RetryInterval}ms");
         Logger.Info($"滚动识别间隔: {args.RollingIntervalMs}ms");
         Logger.Info(args.WebhookEnabled
-            ? $"Webhook 推送: 已启用 ({args.WebhookUrl}, {args.WebhookContentType}, 超时 {args.WebhookTimeoutMs}ms)"
+            ? $"Webhook 推送: 已启用 ({args.WebhookUrl}, {args.WebhookContentType}, 模式 {args.WebhookModeDisplay}, 超时 {args.WebhookTimeoutMs}ms)"
             : "Webhook 推送: 未启用");
 
         for (int attempt = 1; attempt <= args.Retry; attempt++)
@@ -231,6 +231,14 @@ internal static class AppRunner
                         {
                             bufferedLines.Add(line.Source);
                             Logger.Info(FormatRollingOcrEvent(line));
+                            if (webhookDispatcher != null && args.ShouldPushRealtime)
+                            {
+                                var finalContent = line.Source.GetFinalContent();
+                                if (!string.IsNullOrWhiteSpace(finalContent))
+                                {
+                                    await webhookDispatcher.SendFinalContentAsync(finalContent, CancellationToken.None);
+                                }
+                            }
                         }
                     }
                 }
@@ -261,7 +269,10 @@ internal static class AppRunner
 
             Logger.Info("滚动识别已停止。");
             PrintBufferedRollingOcrEvents(bufferedLines);
-            await DispatchBufferedRollingOcrEventsAsync(bufferedLines, webhookDispatcher);
+            if (args.ShouldPushSummary)
+            {
+                await DispatchBufferedRollingOcrEventsAsync(bufferedLines, webhookDispatcher);
+            }
             return 0;
         }
         finally
@@ -441,6 +452,7 @@ internal static class AppRunner
             if (!string.IsNullOrWhiteSpace(input)) config.WebhookContentType = input;
 
             config.WebhookTimeoutMs = AskInteger("请输入 Webhook 超时/毫秒 (1000-60000, 默认: 5000): ", 5000, 1000, 60000);
+            config.WebhookMode = AskWebhookMode();
         }
 
         PrintSummary(config);
@@ -474,6 +486,31 @@ internal static class AppRunner
         }
     }
 
+    private static string AskWebhookMode()
+    {
+        while (true)
+        {
+            Console.Write("请选择 Webhook 推送方式 (1=仅实时, 2=仅总结, 3=全部, 默认: 2): ");
+            var input = Console.ReadLine()?.Trim() ?? "";
+            if (string.IsNullOrWhiteSpace(input)) return "Summary";
+
+            var mode = input switch
+            {
+                "1" => "Realtime",
+                "2" => "Summary",
+                "3" => "All",
+                _ => input
+            };
+
+            if (Arguments.TryNormalizeWebhookMode(mode, out var normalized))
+            {
+                return normalized;
+            }
+
+            Logger.Warn("输入无效, 请输入 1、2、3，或 Realtime/Summary/All");
+        }
+    }
+
     private static void PrintSummary(Arguments config)
     {
         Console.WriteLine();
@@ -492,6 +529,7 @@ internal static class AppRunner
         {
             Console.WriteLine($"  Webhook URL:  {config.WebhookUrl}");
             Console.WriteLine($"  Content-Type: {config.WebhookContentType}");
+            Console.WriteLine($"  推送方式:     {config.WebhookModeDisplay}");
             Console.WriteLine($"  推送超时:     {config.WebhookTimeoutMs}ms");
             Console.WriteLine($"  Body 模板:    {config.WebhookBody}");
         }
