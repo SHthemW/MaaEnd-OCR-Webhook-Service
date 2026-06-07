@@ -110,7 +110,8 @@ internal static class AppRunner
                     screenshot,
                     args.Language,
                     upscale: 4,
-                    preprocessMode: OcrEngine.OcrPreprocessMode.HighContrastBinary);
+                    preprocessMode: OcrEngine.OcrPreprocessMode.HighContrastBinary,
+                    saveDebugImages: args.SaveScreenshot);
                 sw.Stop();
                 Logger.Info($"第一次 OCR 完成, 耗时 {sw.ElapsedMilliseconds}ms, 识别到 {firstResult.Text.Length} 个字符");
 
@@ -236,7 +237,8 @@ internal static class AppRunner
                             croppedBitmap,
                             args.Language,
                             upscale: 8,
-                            preprocessMode: OcrEngine.OcrPreprocessMode.DetailPreserving);
+                            preprocessMode: OcrEngine.OcrPreprocessMode.DetailPreserving,
+                            saveDebugImages: args.SaveScreenshot);
                         sw.Stop();
                         Logger.Debug($"滚动 OCR 第 {round} 次完成, 耗时 {sw.ElapsedMilliseconds}ms, 识别到 {detailedResult.Text.Length} 个字符");
                         Logger.InfoLight($"滚动 OCR 第 {round} 次原文:\n--- OCR 开始 ---\n{FormatOcrTextForLog(detailedResult.Text)}\n--- OCR 结束 ---");

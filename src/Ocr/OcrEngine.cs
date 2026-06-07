@@ -68,14 +68,15 @@ internal static class OcrEngine
         Bitmap bitmap,
         string languageTag,
         int upscale,
-        OcrPreprocessMode preprocessMode = OcrPreprocessMode.HighContrastBinary)
+        OcrPreprocessMode preprocessMode = OcrPreprocessMode.HighContrastBinary,
+        bool saveDebugImages = false)
     {
         if (ShouldUseTiledRecognition(bitmap, upscale))
         {
-            return await RecognizeTiledWithWordsAsync(bitmap, languageTag, upscale, preprocessMode);
+            return await RecognizeTiledWithWordsAsync(bitmap, languageTag, upscale, preprocessMode, saveDebugImages);
         }
 
-        return await RecognizeSingleWithWordsAsync(bitmap, languageTag, upscale, preprocessMode);
+        return await RecognizeSingleWithWordsAsync(bitmap, languageTag, upscale, preprocessMode, saveDebugImages);
     }
 
     private static bool ShouldUseTiledRecognition(Bitmap bitmap, int upscale)
@@ -85,9 +86,10 @@ internal static class OcrEngine
         Bitmap bitmap,
         string languageTag,
         int upscale,
-        OcrPreprocessMode preprocessMode)
+        OcrPreprocessMode preprocessMode,
+        bool saveDebugImages)
     {
-        using var processed = PreprocessForOcr(bitmap, upscale, preprocessMode);
+        using var processed = PreprocessForOcr(bitmap, upscale, preprocessMode, saveDebugImages);
         Logger.Debug($"图像预处理 ({preprocessMode}, {upscale}x): {bitmap.Width}x{bitmap.Height} → {processed.Width}x{processed.Height}");
 
         using var softwareBitmap = await ConvertToSoftwareBitmapAsync(processed);
@@ -118,7 +120,8 @@ internal static class OcrEngine
         Bitmap bitmap,
         string languageTag,
         int upscale,
-        OcrPreprocessMode preprocessMode)
+        OcrPreprocessMode preprocessMode,
+        bool saveDebugImages)
     {
         int tileWidth = Math.Max(1, MaxProcessedTileWidth / Math.Max(1, upscale));
         int overlap = Math.Min(TileOverlap, Math.Max(0, tileWidth / 4));
@@ -134,7 +137,7 @@ internal static class OcrEngine
 
             var tileRect = new Rectangle(left, 0, width, bitmap.Height);
             using var tile = bitmap.Clone(tileRect, bitmap.PixelFormat);
-            var tileResult = await RecognizeSingleWithWordsAsync(tile, languageTag, upscale, preprocessMode);
+            var tileResult = await RecognizeSingleWithWordsAsync(tile, languageTag, upscale, preprocessMode, saveDebugImages);
 
             int coreLeft = left == 0 ? left : left + overlap / 2;
             int coreRight = left + width >= bitmap.Width ? left + width : left + width - overlap / 2;
@@ -693,14 +696,14 @@ internal static class OcrEngine
             || c == '］' || c == '｛' || c == '｝';
     }
 
-    private static Bitmap PreprocessForOcr(Bitmap source, int upscale, OcrPreprocessMode preprocessMode)
+    private static Bitmap PreprocessForOcr(Bitmap source, int upscale, OcrPreprocessMode preprocessMode, bool saveDebugImages)
     {
         int newW = source.Width * upscale;
         int newH = source.Height * upscale;
-        var debugDir = EnsureDebugDir();
+        var debugDir = saveDebugImages ? EnsureDebugDir() : null;
         var modePrefix = preprocessMode == OcrPreprocessMode.HighContrastBinary ? "hc" : "detail";
 
-        SaveDebugImage(source, debugDir, $"{modePrefix}_01_original");
+        if (debugDir is not null) SaveDebugImage(source, debugDir, $"{modePrefix}_01_original");
 
         var scaled = new Bitmap(newW, newH, PixelFormat.Format32bppArgb);
         using (var g = Graphics.FromImage(scaled))
@@ -711,17 +714,17 @@ internal static class OcrEngine
             g.CompositingQuality = System.Drawing.Drawing2D.CompositingQuality.HighQuality;
             g.DrawImage(source, new Rectangle(0, 0, newW, newH));
         }
-        SaveDebugImage(scaled, debugDir, $"{modePrefix}_02_scaled");
+        if (debugDir is not null) SaveDebugImage(scaled, debugDir, $"{modePrefix}_02_scaled");
 
         if (preprocessMode == OcrPreprocessMode.DetailPreserving)
         {
             var enhanced = ApplyColorContrast(scaled, 1.35f);
             scaled.Dispose();
-            SaveDebugImage(enhanced, debugDir, $"{modePrefix}_03_color_contrast");
+            if (debugDir is not null) SaveDebugImage(enhanced, debugDir, $"{modePrefix}_03_color_contrast");
 
             var sharpened = ApplySharpen(enhanced);
             enhanced.Dispose();
-            SaveDebugImage(sharpened, debugDir, $"{modePrefix}_04_sharpen");
+            if (debugDir is not null) SaveDebugImage(sharpened, debugDir, $"{modePrefix}_04_sharpen");
             return sharpened;
         }
 
@@ -741,15 +744,15 @@ internal static class OcrEngine
             g.DrawImage(scaled, new Rectangle(0, 0, newW, newH), 0, 0, newW, newH, GraphicsUnit.Pixel, attr);
         }
         scaled.Dispose();
-        SaveDebugImage(gray, debugDir, $"{modePrefix}_03_grayscale");
+        if (debugDir is not null) SaveDebugImage(gray, debugDir, $"{modePrefix}_03_grayscale");
 
         var contrasted = ApplyColorContrast(gray, 3.5f);
         gray.Dispose();
-        SaveDebugImage(contrasted, debugDir, $"{modePrefix}_04_contrast");
+        if (debugDir is not null) SaveDebugImage(contrasted, debugDir, $"{modePrefix}_04_contrast");
 
         var binary = ApplyOtsuBinarization(contrasted);
         contrasted.Dispose();
-        SaveDebugImage(binary, debugDir, $"{modePrefix}_05_binary");
+        if (debugDir is not null) SaveDebugImage(binary, debugDir, $"{modePrefix}_05_binary");
         return binary;
     }
 
