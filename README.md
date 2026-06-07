@@ -127,3 +127,7 @@ dotnet publish -c Release
 publish\MaaEnd-Log-Retransmitter.exe
 publish\MaaEnd-Log-Retransmitter.pdb
 ```
+
+<p align="center">
+  <img src="res/icon.png" alt="MaaEnd OCR Webhook Service Icon" width="33%">
+</p>
