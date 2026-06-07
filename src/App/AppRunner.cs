@@ -408,7 +408,7 @@ internal static class AppRunner
             => $"{messages.First().TimeText}-{messages.Last().TimeText}";
 
         private static string FormatCachedContentLine(WebhookMessage message)
-            => $"- {message.TimeText}: {message.Content.Replace("\r", " ").Replace("\n", " ").Trim()}";
+            => $"{Environment.NewLine}- {message.TimeText}: {message.Content.Replace("\r", " ").Replace("\n", " ").Trim()}";
 
         private void StartFlushDelay()
         {
