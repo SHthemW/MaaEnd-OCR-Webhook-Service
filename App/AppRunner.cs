@@ -9,6 +9,10 @@ namespace MaaEnd_Log_Retransmitter.App;
 
 internal static class AppRunner
 {
+    private const string WebhookBodyTemplateFileName = "webhook-body-template.json";
+    private const string WebhookBodyInstructionStart = "----- WEBHOOK BODY INSTRUCTIONS START -----";
+    private const string WebhookBodyInstructionEnd = "----- WEBHOOK BODY INSTRUCTIONS END -----";
+
     public static async Task<int> RunAsync()
     {
         PrintBanner();
@@ -508,16 +512,134 @@ internal static class AppRunner
     {
         while (true)
         {
-            Console.Write($"请输入 Webhook Body 模板 (需包含 __CONTENT__, 默认: {defaultValue}): ");
-            var input = Console.ReadLine() ?? "";
-            var value = string.IsNullOrWhiteSpace(input) ? defaultValue : input.Trim();
+            var path = PrepareWebhookBodyTemplateFile(defaultValue);
+            Logger.Info($"即将打开 Webhook Body 模板文件: {path}");
+            Logger.Info("请在记事本中编辑模板，保存并关闭记事本后继续。模板必须包含 __CONTENT__。");
+
+            if (!OpenWebhookBodyTemplateEditor(path))
+            {
+                Console.WriteLine($"无法自动打开记事本，请手动编辑文件后按 Enter 继续: {path}");
+                Console.ReadLine();
+            }
+
+            var value = ReadWebhookBodyTemplateFile(path);
+
             if (!string.IsNullOrWhiteSpace(value) && value.Contains("__CONTENT__", StringComparison.Ordinal))
             {
                 return value;
             }
 
-            Logger.Warn("输入无效, Webhook Body 模板不能为空且必须包含 __CONTENT__");
+            Logger.Warn("Webhook Body 模板无效，不能为空且必须包含 __CONTENT__。将重新打开模板文件。");
         }
+    }
+
+    private static string PrepareWebhookBodyTemplateFile(string defaultValue)
+    {
+        var path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, WebhookBodyTemplateFileName);
+
+        try
+        {
+            if (!File.Exists(path))
+            {
+                File.WriteAllText(path, BuildWebhookBodyTemplateFileContent(defaultValue), Encoding.UTF8);
+                return path;
+            }
+
+            var existing = File.ReadAllText(path, Encoding.UTF8);
+            if (string.IsNullOrWhiteSpace(existing))
+            {
+                File.WriteAllText(path, BuildWebhookBodyTemplateFileContent(defaultValue), Encoding.UTF8);
+            }
+            else if (!existing.Contains(WebhookBodyInstructionStart, StringComparison.Ordinal))
+            {
+                File.WriteAllText(path, BuildWebhookBodyTemplateFileContent(existing), Encoding.UTF8);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"准备 Webhook Body 模板文件失败: {ex.Message}");
+        }
+
+        return path;
+    }
+
+    private static string BuildWebhookBodyTemplateFileContent(string body)
+    {
+        var instructions = string.Join(Environment.NewLine, [
+            WebhookBodyInstructionStart,
+            "# 请在下方编辑 Webhook Body 模板。",
+            "# 必须保留 __CONTENT__ 占位符，程序会用 OCR 内容替换它。",
+            "# 保存并关闭记事本后，CLI 会继续。",
+            "# Edit the Webhook Body template below.",
+            "# Keep the __CONTENT__ placeholder; the app will replace it with OCR content.",
+            "# Save and close Notepad, then the CLI will continue.",
+            WebhookBodyInstructionEnd,
+            ""
+        ]);
+
+        return instructions + body;
+    }
+
+    private static bool OpenWebhookBodyTemplateEditor(string path)
+    {
+        try
+        {
+            using var process = new Process();
+            process.StartInfo.FileName = "notepad.exe";
+            process.StartInfo.UseShellExecute = false;
+            process.StartInfo.CreateNoWindow = false;
+            process.StartInfo.ArgumentList.Add(path);
+
+            if (!process.Start())
+            {
+                return false;
+            }
+
+            process.WaitForExit();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"打开记事本失败: {ex.Message}");
+            return false;
+        }
+    }
+
+    private static string ReadWebhookBodyTemplateFile(string path)
+    {
+        try
+        {
+            var content = File.ReadAllText(path, Encoding.UTF8);
+            return StripWebhookBodyTemplateInstructions(content);
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"读取 Webhook Body 模板文件失败: {ex.Message}");
+            return "";
+        }
+    }
+
+    private static string StripWebhookBodyTemplateInstructions(string content)
+    {
+        var start = content.IndexOf(WebhookBodyInstructionStart, StringComparison.Ordinal);
+        if (start < 0)
+        {
+            return content;
+        }
+
+        var end = content.IndexOf(WebhookBodyInstructionEnd, start, StringComparison.Ordinal);
+        if (end < 0)
+        {
+            return content;
+        }
+
+        end += WebhookBodyInstructionEnd.Length;
+        while (end < content.Length && (content[end] == '\r' || content[end] == '\n'))
+        {
+            end++;
+        }
+
+        return content.Remove(start, end - start);
     }
 
     private static string AskRequiredString(string prompt, string defaultValue)
