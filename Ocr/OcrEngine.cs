@@ -60,6 +60,8 @@ internal static class OcrEngine
         DetailPreserving
     }
 
+    private const int MaxProcessedTileWidth = 3200;
+    private const int TileOverlap = 48;
     private static int _debugSeq;
 
     public static async Task<OcrResultData> RecognizeWithWordsAsync(
@@ -67,6 +69,23 @@ internal static class OcrEngine
         string languageTag,
         int upscale,
         OcrPreprocessMode preprocessMode = OcrPreprocessMode.HighContrastBinary)
+    {
+        if (ShouldUseTiledRecognition(bitmap, upscale))
+        {
+            return await RecognizeTiledWithWordsAsync(bitmap, languageTag, upscale, preprocessMode);
+        }
+
+        return await RecognizeSingleWithWordsAsync(bitmap, languageTag, upscale, preprocessMode);
+    }
+
+    private static bool ShouldUseTiledRecognition(Bitmap bitmap, int upscale)
+        => bitmap.Width * upscale > MaxProcessedTileWidth;
+
+    private static async Task<OcrResultData> RecognizeSingleWithWordsAsync(
+        Bitmap bitmap,
+        string languageTag,
+        int upscale,
+        OcrPreprocessMode preprocessMode)
     {
         using var processed = PreprocessForOcr(bitmap, upscale, preprocessMode);
         Logger.Debug($"图像预处理 ({preprocessMode}, {upscale}x): {bitmap.Width}x{bitmap.Height} → {processed.Width}x{processed.Height}");
@@ -92,6 +111,64 @@ internal static class OcrEngine
             }
         }
 
+        return BuildResultFromWords(words);
+    }
+
+    private static async Task<OcrResultData> RecognizeTiledWithWordsAsync(
+        Bitmap bitmap,
+        string languageTag,
+        int upscale,
+        OcrPreprocessMode preprocessMode)
+    {
+        int tileWidth = Math.Max(1, MaxProcessedTileWidth / Math.Max(1, upscale));
+        int overlap = Math.Min(TileOverlap, Math.Max(0, tileWidth / 4));
+        int step = Math.Max(1, tileWidth - overlap);
+        var allWords = new List<OcrWordInfo>();
+
+        Logger.Debug($"OCR tiled recognition: {bitmap.Width}x{bitmap.Height}, tileWidth={tileWidth}, overlap={overlap}, upscale={upscale}x");
+
+        for (int left = 0, tileIndex = 1; left < bitmap.Width; left += step, tileIndex++)
+        {
+            int width = Math.Min(tileWidth, bitmap.Width - left);
+            if (width <= 0) break;
+
+            var tileRect = new Rectangle(left, 0, width, bitmap.Height);
+            using var tile = bitmap.Clone(tileRect, bitmap.PixelFormat);
+            var tileResult = await RecognizeSingleWithWordsAsync(tile, languageTag, upscale, preprocessMode);
+
+            int coreLeft = left == 0 ? left : left + overlap / 2;
+            int coreRight = left + width >= bitmap.Width ? left + width : left + width - overlap / 2;
+            int accepted = 0;
+
+            foreach (var word in tileResult.Words)
+            {
+                int globalCenterX = left + word.X + word.Width / 2;
+                if (globalCenterX < coreLeft || globalCenterX >= coreRight)
+                {
+                    continue;
+                }
+
+                allWords.Add(new OcrWordInfo
+                {
+                    Text = word.Text,
+                    X = left + word.X,
+                    Y = word.Y,
+                    Width = word.Width,
+                    Height = word.Height
+                });
+                accepted++;
+            }
+
+            Logger.Debug($"OCR tile {tileIndex}: x={left}, width={width}, acceptedWords={accepted}");
+
+            if (left + width >= bitmap.Width) break;
+        }
+
+        return BuildResultFromWords(allWords);
+    }
+
+    private static OcrResultData BuildResultFromWords(List<OcrWordInfo> words)
+    {
         var visualLines = GroupWordsByVisualLines(words);
         var orderedWords = visualLines
             .SelectMany(line => line.Words.OrderBy(word => word.X))
