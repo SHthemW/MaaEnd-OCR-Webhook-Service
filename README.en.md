@@ -35,7 +35,7 @@ Compared with [MaaEnd-Webhook-Retransmitter](https://github.com/SHthemW/MaaEnd-W
 4. After saving, the program starts reading MaaEnd logs and pushing them.
 5. Press `Ctrl+C` to stop rolling recognition. Pending cached pushes are flushed before exit.
 
-The release package includes a default `config.json`. By default, it looks for a window whose title contains `MaaEnd`, then starts OCR below `运行日志`. On later launches, the program checks the configuration automatically. If it is complete and valid, it starts immediately without confirmation.
+The release package includes a default `config.json`. The default `WindowTitle` is `MaaEnd `, including the trailing space, and that space must not be removed. The program looks for a window whose title contains that text, then starts OCR below `运行日志`. On later launches, the program checks the configuration automatically. If it is complete and valid, it starts immediately without confirmation.
 
 ## First-Time Setup
 
@@ -59,7 +59,7 @@ If you use WeCom, Discord, Slack, or another Webhook service, these two fields a
 
 ## Default Behavior
 
-- Target window: a window whose title contains `MaaEnd`, such as `MaaEnd v2.13.0`.
+- Target window: a window whose title contains `MaaEnd `, such as `MaaEnd v2.13.0`. The trailing space inside the backticks is part of the default value and must not be removed.
 - Anchor text: `运行日志`.
 - Push mode: `Realtime`; new logs are pushed as they are detected.
 - OCR language: `zh-Hans`.
@@ -70,7 +70,7 @@ If you use WeCom, Discord, Slack, or another Webhook service, these two fields a
 
 - Window title: the title of the target application window.
 - Search text: anchor text used to locate the log area.
-- Match mode: the program prefers exact title matches; short input such as `MaaEnd` can also match a full title like `MaaEnd v2.13.0`.
+- Match mode: the program prefers exact title matches; the default short title is `MaaEnd `, including the trailing space, and can match a full title like `MaaEnd v2.13.0`.
 - Webhook mode: realtime push, summary push, or both.
 - Webhook push cache time: seconds. `0` disables caching.
 - Save screenshots: only enable this when troubleshooting OCR or screenshot issues.
@@ -112,7 +112,7 @@ Critical logs are never merged into the cache. When a log contains `任务` or `
 ## Usage Tips
 
 - Choose `SearchText` from stable text that appears above the log area.
-- `WindowTitle` can be a full title or a stable short title such as `MaaEnd`.
+- `WindowTitle` can be a full title or a stable short title. The default short title must be `MaaEnd `, with the trailing space preserved.
 - If OCR cannot find the anchor text, enable `SaveScreenshot` and inspect the saved screenshots and preprocessing images.
 - If the Webhook platform expects JSON, set `WebhookContentType` to `application/json` and make sure `WebhookBody` is valid JSON.
 - If pushes are too frequent, set `WebhookPushCacheSeconds`, such as `10` or `30`.
