@@ -536,18 +536,7 @@ internal static class AppRunner
                     }
 
                     Logger.Info($"已加载配置文件: {configPath}");
-                    var decision = ConfirmLoadedConfig(config);
-                    if (decision == LoadedConfigDecision.Start)
-                    {
-                        return config;
-                    }
-
-                    if (decision == LoadedConfigDecision.Exit)
-                    {
-                        return null;
-                    }
-
-                    Logger.Info("进入重新配置流程...");
+                    return config;
                 }
             }
             catch (Exception ex)
@@ -568,27 +557,6 @@ internal static class AppRunner
 
         SaveConfig(configPath, newConfig);
         return newConfig;
-    }
-
-    private enum LoadedConfigDecision
-    {
-        Start,
-        Reconfigure,
-        Exit
-    }
-
-    private static LoadedConfigDecision ConfirmLoadedConfig(Arguments config)
-    {
-        PrintSummary(config);
-        Console.Write("按 Enter 确认并开始执行, 输入 r 重新配置, 输入 q 退出: ");
-        var key = Console.ReadLine()?.Trim().ToLowerInvariant() ?? "";
-
-        if (string.IsNullOrWhiteSpace(key))
-        {
-            return LoadedConfigDecision.Start;
-        }
-
-        return key == "q" ? LoadedConfigDecision.Exit : LoadedConfigDecision.Reconfigure;
     }
 
     private static void SaveConfig(string configPath, Arguments config)
