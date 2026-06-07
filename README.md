@@ -146,3 +146,7 @@ publish\MaaEnd-Log-Retransmitter.pdb
 <p align="center">
   <img src="res/icon.png" alt="MaaEnd OCR Webhook Service Icon" width="33%">
 </p>
+
+<p align="center">
+  <img src="https://img.shields.io/github/downloads/SHthemW/MaaEnd-OCR-Webhook-Service/total" alt="downloads" />
+</p>
