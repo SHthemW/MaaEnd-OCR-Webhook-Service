@@ -12,7 +12,7 @@ internal sealed class Arguments
     public bool CaseSensitive { get; set; }
     public string Language { get; set; } = "zh-Hans";
     public string WebhookUrl { get; set; } = "";
-    public string WebhookBody { get; set; } = "{\"content\":\"__CONTENT__\"}";
+    public string WebhookBody { get; set; } = "{\"time\":\"__TIME__\",\"content\":\"__CONTENT__\"}";
     public string WebhookContentType { get; set; } = "application/json";
     public int WebhookTimeoutMs { get; set; } = 5000;
     public string WebhookMode { get; set; } = RealtimeWebhookMode;

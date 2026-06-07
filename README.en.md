@@ -19,7 +19,7 @@ Compared with [MaaEnd-Webhook-Retransmitter](https://github.com/SHthemW/MaaEnd-W
 - Finds the target window by title, with exact or partial matching.
 - Uses OCR to locate a configured anchor text, then reads log lines below it.
 - Supports realtime pushes, summary pushes on exit, or both.
-- Supports Webhook body templates with `__CONTENT__` as the log content placeholder.
+- Supports Webhook body templates with `__CONTENT__` as the log text placeholder and optional `__TIME__` as the log time placeholder.
 - Opens Notepad for multi-line Webhook body editing during interactive setup.
 - Supports realtime push caching to reduce frequent Webhook requests.
 - Keeps critical logs as standalone pushes. Logs containing `任务` or `重要通知` flush pending cached logs first, then push the critical log separately.
@@ -42,7 +42,7 @@ The release package includes a default `config.json`. By default, it looks for a
 The default configuration covers most MaaEnd use cases. For first-time use, focus on these two fields:
 
 - `WebhookUrl`: HTTP/HTTPS endpoint that receives log pushes.
-- `WebhookBody`: request body template. It must contain `__CONTENT__`.
+- `WebhookBody`: request body template. It must contain `__CONTENT__` and can optionally contain `__TIME__`.
 
 Webhook bodies are often multi-line JSON. When configuring this field, the program opens `webhook-body-template.json` in Notepad. Edit the template, save it, close Notepad, and the CLI will continue.
 
@@ -50,6 +50,7 @@ Example body:
 
 ```json
 {
+  "time": "__TIME__",
   "content": "__CONTENT__"
 }
 ```
@@ -90,7 +91,7 @@ If you use WeCom, Discord, Slack, or another Webhook service, these two fields a
 | `CaseSensitive` | Match `SearchText` case-sensitively | `true` / `false` |
 | `Language` | Windows OCR language tag | For example `zh-Hans` |
 | `WebhookUrl` | Webhook endpoint | Non-empty `http` / `https` URL |
-| `WebhookBody` | Webhook request body template | Non-empty and must contain `__CONTENT__` |
+| `WebhookBody` | Webhook request body template | Non-empty, must contain `__CONTENT__`, and can optionally contain `__TIME__` |
 | `WebhookContentType` | Webhook request Content-Type | Non-empty string, commonly `application/json` |
 | `WebhookTimeoutMs` | Webhook request timeout in milliseconds | `1000` to `60000` |
 | `WebhookMode` | Webhook push mode | `Realtime` / `Summary` / `All` |
@@ -101,6 +102,8 @@ If you use WeCom, Discord, Slack, or another Webhook service, these two fields a
 - `Realtime`: push each new log line during rolling recognition.
 - `Summary`: push collected logs when the program stops.
 - `All`: enable both realtime and summary pushes.
+
+When sending a Webhook, `__CONTENT__` is replaced with the log text only and no longer includes the time. If the template contains `__TIME__`, it is replaced with the recognized time string.
 
 When `WebhookPushCacheSeconds` is greater than `0`, normal realtime logs are buffered. Once the configured number of seconds has elapsed, cached logs are merged into one Webhook push.
 

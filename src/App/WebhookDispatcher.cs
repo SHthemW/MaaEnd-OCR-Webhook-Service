@@ -18,9 +18,17 @@ internal sealed class WebhookDispatcher
         _timeoutMs = args.WebhookTimeoutMs;
     }
 
+    public Task SendAsync(WebhookMessage message, CancellationToken cancellationToken)
+        => SendAsync(message.Content, message.TimeText, cancellationToken);
+
     public async Task SendFinalContentAsync(string finalContent, CancellationToken cancellationToken)
+        => await SendAsync(finalContent, string.Empty, cancellationToken);
+
+    public async Task SendAsync(string content, string timeText, CancellationToken cancellationToken)
     {
-        var body = _bodyTemplate.Replace("__CONTENT__", finalContent, StringComparison.Ordinal);
+        var body = _bodyTemplate
+            .Replace("__CONTENT__", content, StringComparison.Ordinal)
+            .Replace("__TIME__", timeText, StringComparison.Ordinal);
         using var process = new Process { StartInfo = CreateStartInfo(body) };
 
         try
@@ -41,7 +49,7 @@ internal sealed class WebhookDispatcher
         if (completedTask != waitForExitTask)
         {
             TryKill(process);
-            Logger.Warn($"Webhook 推送超时 ({_timeoutMs}ms): {TruncateForLog(finalContent)}");
+            Logger.Warn($"Webhook 推送超时 ({_timeoutMs}ms): {TruncateForLog(content)}");
             return;
         }
 
@@ -51,7 +59,7 @@ internal sealed class WebhookDispatcher
 
         if (process.ExitCode == 0)
         {
-            Logger.InfoLight($"Webhook 推送成功: {TruncateForLog(finalContent)}");
+            Logger.InfoLight($"Webhook 推送成功: {TruncateForLog(content)}");
             return;
         }
 
@@ -106,4 +114,13 @@ internal sealed class WebhookDispatcher
         var normalized = value.Replace("\r", " ").Replace("\n", " ").Trim();
         return normalized.Length <= 200 ? normalized : normalized[..200] + "...";
     }
+}
+
+internal sealed class WebhookMessage(string timeText, string content)
+{
+    public string TimeText { get; } = timeText;
+    public string Content { get; } = content;
+
+    public static WebhookMessage FromOcrLine(MaaEnd_Log_Retransmitter.Ocr.OcrEngine.OcrLineInfo line)
+        => new(line.GetDisplayTimeText(), line.Content);
 }

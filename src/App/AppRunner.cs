@@ -254,10 +254,10 @@ internal static class AppRunner
                             Logger.Info(FormatRollingOcrEvent(line));
                             if (args.ShouldPushRealtime)
                             {
-                                var finalContent = line.Source.GetFinalContent();
-                                if (!string.IsNullOrWhiteSpace(finalContent))
+                                var webhookMessage = WebhookMessage.FromOcrLine(line.Source);
+                                if (!string.IsNullOrWhiteSpace(webhookMessage.Content))
                                 {
-                                    await realtimeWebhookCache.SendAsync(finalContent, CancellationToken.None);
+                                    await realtimeWebhookCache.SendAsync(webhookMessage, CancellationToken.None);
                                 }
                             }
                         }
@@ -332,7 +332,7 @@ internal static class AppRunner
         private const string ImportantNotificationMarker = "重要通知";
         private readonly WebhookDispatcher _dispatcher;
         private readonly TimeSpan _cacheDuration;
-        private readonly List<string> _pendingMessages = [];
+        private readonly List<WebhookMessage> _pendingMessages = [];
         private readonly SemaphoreSlim _sync = new(1, 1);
         private CancellationTokenSource? _flushDelayCancellation;
 
@@ -342,30 +342,30 @@ internal static class AppRunner
             _cacheDuration = TimeSpan.FromSeconds(Math.Max(0, cacheSeconds));
         }
 
-        public async Task SendAsync(string content, CancellationToken cancellationToken)
+        public async Task SendAsync(WebhookMessage message, CancellationToken cancellationToken)
         {
-            if (string.IsNullOrWhiteSpace(content))
+            if (string.IsNullOrWhiteSpace(message.Content))
             {
                 return;
             }
 
             if (_cacheDuration <= TimeSpan.Zero)
             {
-                await _dispatcher.SendFinalContentAsync(content, cancellationToken);
+                await _dispatcher.SendAsync(message, cancellationToken);
                 return;
             }
 
-            if (IsCriticalLog(content))
+            if (IsCriticalLog(message.Content))
             {
                 await FlushAsync(cancellationToken);
-                await _dispatcher.SendFinalContentAsync(content, cancellationToken);
+                await _dispatcher.SendAsync(message, cancellationToken);
                 return;
             }
 
             await _sync.WaitAsync(cancellationToken);
             try
             {
-                _pendingMessages.Add(content);
+                _pendingMessages.Add(message);
                 if (_pendingMessages.Count == 1)
                 {
                     StartFlushDelay();
@@ -379,7 +379,7 @@ internal static class AppRunner
 
         public async Task FlushAsync(CancellationToken cancellationToken)
         {
-            List<string> messages;
+            List<WebhookMessage> messages;
             await _sync.WaitAsync(cancellationToken);
             try
             {
@@ -397,8 +397,9 @@ internal static class AppRunner
                 _sync.Release();
             }
 
-            var cachedContent = string.Join(Environment.NewLine, messages);
-            await _dispatcher.SendFinalContentAsync(cachedContent, cancellationToken);
+            var cachedTimeText = string.Join(Environment.NewLine, messages.Select(message => message.TimeText));
+            var cachedContent = string.Join(Environment.NewLine, messages.Select(message => message.Content));
+            await _dispatcher.SendAsync(cachedContent, cachedTimeText, cancellationToken);
         }
 
         private void StartFlushDelay()
@@ -463,13 +464,13 @@ internal static class AppRunner
 
         foreach (var line in bufferedLines)
         {
-            var finalContent = line.GetFinalContent();
-            if (string.IsNullOrWhiteSpace(finalContent))
+            var message = WebhookMessage.FromOcrLine(line);
+            if (string.IsNullOrWhiteSpace(message.Content))
             {
                 continue;
             }
 
-            await webhookDispatcher.SendFinalContentAsync(finalContent, CancellationToken.None);
+            await webhookDispatcher.SendAsync(message, CancellationToken.None);
         }
     }
 
@@ -907,7 +908,7 @@ internal static class AppRunner
         {
             var path = PrepareWebhookBodyTemplateFile(defaultValue);
             Logger.Info($"即将打开 Webhook Body 模板文件: {path}");
-            Logger.Info("请在记事本中编辑模板，保存并关闭记事本后继续。模板必须包含 __CONTENT__。");
+            Logger.Info("请在记事本中编辑模板，保存并关闭记事本后继续。模板必须包含 __CONTENT__，可选包含 __TIME__。");
 
             if (!OpenWebhookBodyTemplateEditor(path))
             {
@@ -962,9 +963,11 @@ internal static class AppRunner
             WebhookBodyInstructionStart,
             "# 请在下方编辑 Webhook Body 模板。",
             "# 必须保留 __CONTENT__ 占位符，程序会用 OCR 内容替换它。",
+            "# 可选使用 __TIME__ 占位符，程序会用 OCR 时间替换它。",
             "# 保存并关闭记事本后，CLI 会继续。",
             "# Edit the Webhook Body template below.",
             "# Keep the __CONTENT__ placeholder; the app will replace it with OCR content.",
+            "# Optionally use the __TIME__ placeholder; the app will replace it with OCR time.",
             "# Save and close Notepad, then the CLI will continue.",
             WebhookBodyInstructionEnd,
             ""
