@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="res/title.jpg" alt="MaaEnd OCR Webhook Service" width="60%">
+  <img src="res/title.jpg" alt="MaaEnd OCR Webhook Service" width="100%">
 </p>
 
 <p align="center">
