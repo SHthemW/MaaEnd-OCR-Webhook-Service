@@ -399,10 +399,16 @@ internal static class AppRunner
                 _sync.Release();
             }
 
-            var cachedTimeText = string.Join(Environment.NewLine, messages.Select(message => message.TimeText));
-            var cachedContent = string.Join(Environment.NewLine, messages.Select(message => message.Content));
+            var cachedTimeText = BuildCachedTimeText(messages);
+            var cachedContent = string.Join(Environment.NewLine, messages.Select(FormatCachedContentLine));
             await _dispatcher.SendAsync(cachedContent, cachedTimeText, cancellationToken);
         }
+
+        private static string BuildCachedTimeText(IReadOnlyList<WebhookMessage> messages)
+            => $"{messages.First().TimeText}-{messages.Last().TimeText}";
+
+        private static string FormatCachedContentLine(WebhookMessage message)
+            => $"- {message.TimeText}: {message.Content.Replace("\r", " ").Replace("\n", " ").Trim()}";
 
         private void StartFlushDelay()
         {
