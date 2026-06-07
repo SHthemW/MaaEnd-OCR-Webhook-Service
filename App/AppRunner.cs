@@ -173,6 +173,7 @@ internal static class AppRunner
         var outputFilter = new RollingOcrOutputFilter();
         var bufferedLines = new List<OcrEngine.OcrLineInfo>();
         var webhookDispatcher = new WebhookDispatcher(args);
+        var realtimeWebhookCache = new RealtimeWebhookPushCache(webhookDispatcher, args.WebhookPushCacheSeconds);
         using var cancellation = new CancellationTokenSource();
         ConsoleCancelEventHandler? handler = (_, e) =>
         {
@@ -238,7 +239,7 @@ internal static class AppRunner
                                 var finalContent = line.Source.GetFinalContent();
                                 if (!string.IsNullOrWhiteSpace(finalContent))
                                 {
-                                    await webhookDispatcher.SendFinalContentAsync(finalContent, CancellationToken.None);
+                                    await realtimeWebhookCache.SendAsync(finalContent, CancellationToken.None);
                                 }
                             }
                         }
@@ -270,6 +271,11 @@ internal static class AppRunner
             }
 
             Logger.Info("滚动识别已停止。");
+            if (args.ShouldPushRealtime)
+            {
+                await realtimeWebhookCache.FlushAsync(CancellationToken.None);
+            }
+
             PrintBufferedRollingOcrEvents(bufferedLines);
             if (args.ShouldPushSummary)
             {
@@ -301,6 +307,119 @@ internal static class AppRunner
 
     private static string FormatRollingOcrEvent(RollingOcrOutputFilter.OutputLine line)
         => $"OCR事件[{line.Category}]: TimeText=\"{line.TimeText}\", Content=\"{line.Content}\"";
+
+    private sealed class RealtimeWebhookPushCache
+    {
+        private const string ImportantNotificationMarker = "重要通知";
+        private readonly WebhookDispatcher _dispatcher;
+        private readonly TimeSpan _cacheDuration;
+        private readonly List<string> _pendingMessages = [];
+        private readonly SemaphoreSlim _sync = new(1, 1);
+        private CancellationTokenSource? _flushDelayCancellation;
+
+        public RealtimeWebhookPushCache(WebhookDispatcher dispatcher, int cacheSeconds)
+        {
+            _dispatcher = dispatcher;
+            _cacheDuration = TimeSpan.FromSeconds(Math.Max(0, cacheSeconds));
+        }
+
+        public async Task SendAsync(string content, CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrWhiteSpace(content))
+            {
+                return;
+            }
+
+            if (_cacheDuration <= TimeSpan.Zero)
+            {
+                await _dispatcher.SendFinalContentAsync(content, cancellationToken);
+                return;
+            }
+
+            if (IsImportantNotification(content))
+            {
+                await FlushAsync(cancellationToken);
+                await _dispatcher.SendFinalContentAsync(content, cancellationToken);
+                return;
+            }
+
+            await _sync.WaitAsync(cancellationToken);
+            try
+            {
+                _pendingMessages.Add(content);
+                if (_pendingMessages.Count == 1)
+                {
+                    StartFlushDelay();
+                }
+            }
+            finally
+            {
+                _sync.Release();
+            }
+        }
+
+        public async Task FlushAsync(CancellationToken cancellationToken)
+        {
+            List<string> messages;
+            await _sync.WaitAsync(cancellationToken);
+            try
+            {
+                if (_pendingMessages.Count == 0)
+                {
+                    return;
+                }
+
+                CancelFlushDelay();
+                messages = _pendingMessages.ToList();
+                _pendingMessages.Clear();
+            }
+            finally
+            {
+                _sync.Release();
+            }
+
+            var cachedContent = string.Join(Environment.NewLine, messages);
+            await _dispatcher.SendFinalContentAsync(cachedContent, cancellationToken);
+        }
+
+        private void StartFlushDelay()
+        {
+            CancelFlushDelay();
+            _flushDelayCancellation = new CancellationTokenSource();
+            _ = FlushAfterDelayAsync(_flushDelayCancellation.Token);
+        }
+
+        private void CancelFlushDelay()
+        {
+            if (_flushDelayCancellation == null)
+            {
+                return;
+            }
+
+            _flushDelayCancellation.Cancel();
+            _flushDelayCancellation.Dispose();
+            _flushDelayCancellation = null;
+        }
+
+        private async Task FlushAfterDelayAsync(CancellationToken cancellationToken)
+        {
+            try
+            {
+                await Task.Delay(_cacheDuration, cancellationToken);
+                await FlushAsync(CancellationToken.None);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn($"Webhook 推送缓存自动刷新失败: {ex.Message}");
+            }
+        }
+
+        private static bool IsImportantNotification(string content)
+            => content.Contains(ImportantNotificationMarker, StringComparison.Ordinal);
+    }
 
     private static void PrintBufferedRollingOcrEvents(List<OcrEngine.OcrLineInfo> bufferedLines)
     {
@@ -449,6 +568,7 @@ internal static class AppRunner
 
         config.WebhookTimeoutMs = AskInteger("请输入 Webhook 超时/毫秒 (1000-60000, 默认: 5000): ", 5000, 1000, 60000);
         config.WebhookMode = AskWebhookMode();
+        config.WebhookPushCacheSeconds = AskInteger("请输入 Webhook 推送缓存时间/秒 (0-86400, 0=不启用, 默认: 0): ", 0, 0, 86400);
 
         if (!config.TryValidate(out var validationErrors))
         {
@@ -701,6 +821,7 @@ internal static class AppRunner
         Console.WriteLine($"  Content-Type: {config.WebhookContentType}");
         Console.WriteLine($"  推送方式:     {config.WebhookModeDisplay}");
         Console.WriteLine($"  推送超时:     {config.WebhookTimeoutMs}ms");
+        Console.WriteLine($"  推送缓存时间: {config.WebhookPushCacheSeconds}s");
         Console.WriteLine($"  Body 模板:    {config.WebhookBody}");
         Console.WriteLine("═══════════════════════════════");
         Console.WriteLine();

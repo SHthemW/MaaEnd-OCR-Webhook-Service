@@ -16,6 +16,7 @@ internal sealed class Arguments
     public string WebhookContentType { get; set; } = "application/json";
     public int WebhookTimeoutMs { get; set; } = 5000;
     public string WebhookMode { get; set; } = RealtimeWebhookMode;
+    public int WebhookPushCacheSeconds { get; set; }
 
     private const string RealtimeWebhookMode = "Realtime";
     private const string SummaryWebhookMode = "Summary";
@@ -69,6 +70,7 @@ internal sealed class Arguments
 
         if (string.IsNullOrWhiteSpace(WebhookContentType)) errors.Add("WebhookContentType 不能为空");
         if (WebhookTimeoutMs is < 1000 or > 60000) errors.Add("WebhookTimeoutMs 必须在 1000 到 60000 毫秒之间");
+        if (WebhookPushCacheSeconds is < 0 or > 86400) errors.Add("WebhookPushCacheSeconds 必须在 0 到 86400 秒之间，0 表示不启用");
 
         if (string.IsNullOrWhiteSpace(WebhookMode))
         {
