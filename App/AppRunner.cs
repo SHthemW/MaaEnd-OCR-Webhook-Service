@@ -328,6 +328,7 @@ internal static class AppRunner
 
     private sealed class RealtimeWebhookPushCache
     {
+        private const string CriticalLogMarker = "任务";
         private const string ImportantNotificationMarker = "重要通知";
         private readonly WebhookDispatcher _dispatcher;
         private readonly TimeSpan _cacheDuration;
@@ -354,7 +355,7 @@ internal static class AppRunner
                 return;
             }
 
-            if (IsImportantNotification(content))
+            if (IsCriticalLog(content))
             {
                 await FlushAsync(cancellationToken);
                 await _dispatcher.SendFinalContentAsync(content, cancellationToken);
@@ -435,8 +436,9 @@ internal static class AppRunner
             }
         }
 
-        private static bool IsImportantNotification(string content)
-            => content.Contains(ImportantNotificationMarker, StringComparison.Ordinal);
+        private static bool IsCriticalLog(string content)
+            => content.Contains(CriticalLogMarker, StringComparison.Ordinal)
+                || content.Contains(ImportantNotificationMarker, StringComparison.Ordinal);
     }
 
     private static void PrintBufferedRollingOcrEvents(List<OcrEngine.OcrLineInfo> bufferedLines)
