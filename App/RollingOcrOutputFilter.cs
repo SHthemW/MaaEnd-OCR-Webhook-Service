@@ -22,6 +22,10 @@ internal sealed class RollingOcrOutputFilter
         @"^(?<prefix>任务开始|任务完成|任务失败)\s*(?:[:：．.]|\s)?\s*(?<payload>.+)$",
         RegexOptions.Compiled);
 
+    private static readonly Regex LeadingTimeOcrPattern = new(
+        @"^\s*(?<time>[0-9oOcCeE\uFF10-\uFF19:\uFF1A\uFE55\uA789.\u00B7\u2022,\uFF0C-]{4,20})\s*(?<content>\S.+)$",
+        RegexOptions.Compiled);
+
     private const int MaxHistorySize = 160;
     private readonly List<string> _acceptedSignatures = [];
     private List<string>? _previousFrameSignatures;
@@ -172,7 +176,7 @@ internal sealed class RollingOcrOutputFilter
 
         if (string.IsNullOrWhiteSpace(text)) return false;
 
-        var match = LeadingTimePattern.Match(text);
+        var match = LeadingTimeOcrPattern.Match(text);
         if (!match.Success) return false;
 
         var normalizedTime = NormalizeTimeText(match.Groups["time"].Value);
@@ -202,7 +206,7 @@ internal sealed class RollingOcrOutputFilter
 
         var flatChars = normalized
             .Where(c => !char.IsWhiteSpace(c) && !IsTimeSeparator(c))
-            .Select(c => TryNormalizeDigit(c, out var digit) ? digit : '?')
+            .Select(c => TryNormalizeTimeDigit(c, out var digit) ? digit : '?')
             .ToList();
 
         if (flatChars.Count == 0) return string.Empty;
@@ -220,7 +224,7 @@ internal sealed class RollingOcrOutputFilter
 
         var chars = part
             .Where(c => !char.IsWhiteSpace(c))
-            .Select(c => TryNormalizeDigit(c, out var digit) ? digit : '?')
+            .Select(c => TryNormalizeTimeDigit(c, out var digit) ? digit : '?')
             .Take(2)
             .ToList();
 
@@ -234,7 +238,7 @@ internal sealed class RollingOcrOutputFilter
 
     private static string? ExtractLooseTime(string text)
     {
-        var match = LeadingTimePattern.Match(text);
+        var match = LeadingTimeOcrPattern.Match(text);
         if (!match.Success) return null;
         var candidate = NormalizeTimeText(match.Groups["time"].Value);
         return string.IsNullOrWhiteSpace(candidate) ? null : candidate;
@@ -424,6 +428,22 @@ internal sealed class RollingOcrOutputFilter
         }
 
         digit = default;
+        return false;
+    }
+
+    private static bool TryNormalizeTimeDigit(char c, out char digit)
+    {
+        if (TryNormalizeDigit(c, out digit))
+        {
+            return true;
+        }
+
+        if (c is 'o' or 'O' or 'c' or 'C' or 'e' or 'E')
+        {
+            digit = '0';
+            return true;
+        }
+
         return false;
     }
 
