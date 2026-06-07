@@ -8,7 +8,7 @@
 
 # MaaEnd OCR Webhook Service
 
-MaaEnd OCR Webhook Service is a Windows command line tool that watches a target application window, reads MaaEnd-style runtime logs with OCR, and forwards detected log lines to a Webhook endpoint. It is designed for workflows where MaaEnd logs are visible in a GUI window but need to be collected, buffered, and pushed to external services.
+MaaEnd OCR Webhook Service is a Windows command line tool that watches a target application window, reads MaaEnd-style runtime logs through OCR, and forwards detected log lines to a Webhook endpoint. It is designed for workflows where logs are visible in a GUI window but still need to be collected, buffered, and forwarded to external services.
 
 This program was created because the official MaaEnd repository has limited Webhook push support, currently relying on HTTP POST that is only usable on a small number of platforms, and there is no short-term development plan for broader notification support. See [MaaEnd issue #1421](https://github.com/MaaEnd/MaaEnd/issues/1421).
 
@@ -16,80 +16,42 @@ Compared with [MaaEnd-Webhook-Retransmitter](https://github.com/SHthemW/MaaEnd-W
 
 ## Features
 
-- Finds a target window by title, with exact or partial title matching.
-- Captures the window and locates a configured anchor text with OCR.
-- Enters rolling OCR mode and extracts new log lines below the anchor text.
-- Sends realtime log lines, a summary after exit, or both.
-- Supports Webhook body templates with the `__CONTENT__` placeholder.
+- Finds the target window by title, with exact or partial matching.
+- Uses OCR to locate a configured anchor text, then reads log lines below it.
+- Supports realtime pushes, summary pushes on exit, or both.
+- Supports Webhook body templates with `__CONTENT__` as the log content placeholder.
 - Opens Notepad for multi-line Webhook body editing during interactive setup.
-- Can cache realtime Webhook pushes for a configured number of seconds.
+- Supports realtime push caching to reduce frequent Webhook requests.
 - Keeps critical logs as standalone pushes. Logs containing `任务` or `重要通知` flush pending cached logs first, then push the critical log separately.
-- Can save debug screenshots and OCR preprocessing images for troubleshooting.
+- Can save screenshots and OCR preprocessing images for troubleshooting.
 
-## Requirements
+## Quick Start
 
-- Windows 10 19041 or later.
-- .NET 8 SDK for development builds, or a published executable.
-- Windows OCR language support for the configured language, such as `zh-Hans`.
-- A Webhook endpoint that accepts the configured body and content type.
+1. Run `MaaEnd-Log-Retransmitter.exe`.
+2. On first launch, complete the interactive configuration wizard.
+3. The program finds the target window, runs initial OCR, and locates `SearchText`.
+4. After the anchor is found, it enters rolling OCR mode.
+5. New log lines are printed to the console and pushed according to `WebhookMode`.
+6. Press `Ctrl+C` to stop rolling recognition. Pending cached pushes are flushed before exit.
 
-## Build
+On later launches, the program automatically checks `config.json`. If the configuration is complete and valid, it starts immediately. If a key is missing, empty, or invalid, only the affected fields are repaired through the wizard.
 
-From this repository:
+## Setup Wizard
 
-```powershell
-dotnet build -p:UseAppHost=false
-```
+When the program runs for the first time, or when the configuration is invalid, it starts the setup wizard. Common fields:
 
-If an existing `MaaEnd-Log-Retransmitter.exe` instance is running, it may lock files in `bin`. Stop the running instance before a normal rebuild.
+- Window title: the title of the target application window.
+- Search text: anchor text used to locate the log area.
+- Match mode: whether partial window title matching is allowed.
+- OCR language: usually `zh-Hans`.
+- Webhook URL: HTTP/HTTPS endpoint that receives log pushes.
+- Webhook body: request body template. It must contain `__CONTENT__`.
+- Webhook mode: realtime push, summary push, or both.
+- Webhook push cache time: seconds. `0` disables caching.
 
-## Run
+Webhook bodies are often multi-line JSON. When configuring this field, the program opens `webhook-body-template.json` in Notepad. Edit the template, save it, close Notepad, and the CLI will continue.
 
-During development:
-
-```powershell
-dotnet run
-```
-
-Or run the built executable:
-
-```powershell
-.\bin\Debug\net8.0-windows10.0.19041.0\MaaEnd-Log-Retransmitter.exe
-```
-
-On first launch, the program creates `config.json` next to the executable through an interactive wizard. On later launches, it self-checks the configuration. If all required keys are present and valid, it starts immediately. If a key is missing, empty, or invalid, only the affected fields are repaired through the wizard.
-
-## Configuration
-
-`config.json` is standard JSON. Important fields:
-
-- `WindowTitle`: target window title.
-- `SearchText`: anchor text that marks where rolling log OCR should start.
-- `PartialMatch`: `true` to match a partial window title.
-- `SaveScreenshot`: `true` to save screenshots and OCR preprocessing images.
-- `Retry`: number of initial OCR retries, from `1` to `10`.
-- `RetryInterval`: retry interval in milliseconds, from `100` to `60000`.
-- `RollingIntervalMs`: rolling OCR interval in milliseconds, from `500` to `60000`.
-- `CaseSensitive`: `true` for case-sensitive anchor text matching.
-- `Language`: Windows OCR language tag, such as `zh-Hans`.
-- `WebhookUrl`: target Webhook URL. Must be `http` or `https`.
-- `WebhookBody`: request body template. It must contain `__CONTENT__`.
-- `WebhookContentType`: Webhook request content type, usually `application/json`.
-- `WebhookTimeoutMs`: Webhook timeout in milliseconds, from `1000` to `60000`.
-- `WebhookMode`: `Realtime`, `Summary`, or `All`.
-- `WebhookPushCacheSeconds`: realtime push cache time in seconds. `0` disables caching.
-
-### Webhook Modes
-
-- `Realtime`: push each accepted OCR log line during rolling recognition.
-- `Summary`: push collected OCR log lines when the program stops.
-- `All`: use both realtime and summary push modes.
-
-### Webhook Body Template
-
-The body template must include `__CONTENT__`. The program replaces it with the final OCR log content before sending.
-
-Example:
+Example body:
 
 ```json
 {
@@ -97,22 +59,71 @@ Example:
 }
 ```
 
-Because Webhook bodies are usually multi-line, the interactive wizard opens `webhook-body-template.json` in Notepad. Edit the template, save it, close Notepad, and the CLI will continue.
+## Configuration
 
-## Runtime Flow
+`config.json` is located next to the executable and uses standard JSON. Important fields:
 
-1. Load or create `config.json`.
-2. Validate the configuration and repair only invalid fields if needed.
-3. Find the configured target window.
-4. Capture the window and run initial OCR.
-5. Locate `SearchText`.
-6. Crop the area below the matched text and enter rolling OCR mode.
-7. Print accepted log lines and push Webhook messages according to `WebhookMode`.
-8. Press `Ctrl+C` to stop rolling OCR and flush pending cached pushes.
+| Field | Meaning | Valid value |
+| --- | --- | --- |
+| `WindowTitle` | Target window title | Non-empty string |
+| `SearchText` | Anchor text; rolling OCR starts below it | Non-empty string |
+| `PartialMatch` | Use partial window title matching | `true` / `false` |
+| `SaveScreenshot` | Save screenshots and OCR preprocessing images | `true` / `false` |
+| `Retry` | Initial OCR retry count | `1` to `10` |
+| `RetryInterval` | Initial OCR retry interval in milliseconds | `100` to `60000` |
+| `RollingIntervalMs` | Rolling OCR interval in milliseconds | `500` to `60000` |
+| `CaseSensitive` | Match `SearchText` case-sensitively | `true` / `false` |
+| `Language` | Windows OCR language tag | For example `zh-Hans` |
+| `WebhookUrl` | Webhook endpoint | Non-empty `http` / `https` URL |
+| `WebhookBody` | Webhook request body template | Non-empty and must contain `__CONTENT__` |
+| `WebhookContentType` | Webhook request Content-Type | Non-empty string, commonly `application/json` |
+| `WebhookTimeoutMs` | Webhook request timeout in milliseconds | `1000` to `60000` |
+| `WebhookMode` | Webhook push mode | `Realtime` / `Summary` / `All` |
+| `WebhookPushCacheSeconds` | Realtime push cache time in seconds | `0` to `86400`; `0` disables caching |
+
+## Webhook Modes
+
+- `Realtime`: push each new log line during rolling recognition.
+- `Summary`: push collected logs when the program stops.
+- `All`: enable both realtime and summary pushes.
+
+When `WebhookPushCacheSeconds` is greater than `0`, normal realtime logs are buffered. Once the configured number of seconds has elapsed, cached logs are merged into one Webhook push.
+
+Critical logs are never merged into the cache. When a log contains `任务` or `重要通知`, the program first sends and clears the existing cache, then sends that critical log as a separate Webhook push.
+
+## Usage Tips
+
+- Choose `SearchText` from stable text that appears above the log area.
+- Enable `PartialMatch` if the target window title changes.
+- If OCR cannot find the anchor text, enable `SaveScreenshot` and inspect the saved screenshots and preprocessing images.
+- If the Webhook platform expects JSON, set `WebhookContentType` to `application/json` and make sure `WebhookBody` is valid JSON.
+- If pushes are too frequent, set `WebhookPushCacheSeconds`, such as `10` or `30`.
 
 ## Troubleshooting
 
-- If OCR cannot find `SearchText`, enable `SaveScreenshot` and inspect the saved images.
-- If screenshots look incorrect, make sure the target window is visible and not minimized.
-- If Webhook pushes fail, check `WebhookUrl`, `WebhookContentType`, `WebhookBody`, and the timeout value.
-- If the configured OCR language is unavailable, install the corresponding Windows OCR language package.
+- Window not found: check `WindowTitle` and `PartialMatch`.
+- `SearchText` not found: check screenshots, OCR language, and case-sensitive matching.
+- Screenshot looks wrong: make sure the target window is visible and not minimized.
+- Webhook push failed: check `WebhookUrl`, `WebhookBody`, `WebhookContentType`, and `WebhookTimeoutMs`.
+- OCR language unavailable: install the corresponding Windows OCR language package.
+
+## Development And Packaging
+
+Development build:
+
+```powershell
+dotnet build
+```
+
+Release package:
+
+```powershell
+dotnet publish -c Release
+```
+
+The project is configured for Windows x64 self-contained single-file publishing. Output files are written to `publish\`:
+
+```text
+publish\MaaEnd-Log-Retransmitter.exe
+publish\MaaEnd-Log-Retransmitter.pdb
+```
