@@ -40,52 +40,60 @@ internal sealed class Arguments
 
     public bool TryValidate(out List<string> errors)
     {
-        errors = [];
+        var invalidFields = GetInvalidFields();
+        errors = invalidFields.Select(GetValidationMessage).ToList();
 
-        if (string.IsNullOrWhiteSpace(WindowTitle)) errors.Add("WindowTitle 不能为空");
-        if (string.IsNullOrWhiteSpace(SearchText)) errors.Add("SearchText 不能为空");
-        if (string.IsNullOrWhiteSpace(Language)) errors.Add("Language 不能为空");
-
-        if (Retry is < 1 or > 10) errors.Add("Retry 必须在 1 到 10 之间");
-        if (RetryInterval is < 100 or > 60000) errors.Add("RetryInterval 必须在 100 到 60000 毫秒之间");
-        if (RollingIntervalMs is < 500 or > 60000) errors.Add("RollingIntervalMs 必须在 500 到 60000 毫秒之间");
-
-        if (string.IsNullOrWhiteSpace(WebhookUrl))
-        {
-            errors.Add("WebhookUrl 不能为空");
-        }
-        else if (!IsValidHttpUrl(WebhookUrl))
-        {
-            errors.Add("WebhookUrl 必须是合法的 http/https URL");
-        }
-
-        if (string.IsNullOrWhiteSpace(WebhookBody))
-        {
-            errors.Add("WebhookBody 不能为空");
-        }
-        else if (!WebhookBody.Contains("__CONTENT__", StringComparison.Ordinal))
-        {
-            errors.Add("WebhookBody 必须包含 __CONTENT__ 占位符");
-        }
-
-        if (string.IsNullOrWhiteSpace(WebhookContentType)) errors.Add("WebhookContentType 不能为空");
-        if (WebhookTimeoutMs is < 1000 or > 60000) errors.Add("WebhookTimeoutMs 必须在 1000 到 60000 毫秒之间");
-        if (WebhookPushCacheSeconds is < 0 or > 86400) errors.Add("WebhookPushCacheSeconds 必须在 0 到 86400 秒之间，0 表示不启用");
-
-        if (string.IsNullOrWhiteSpace(WebhookMode))
-        {
-            errors.Add("WebhookMode 不能为空");
-        }
-        else if (TryNormalizeWebhookMode(WebhookMode, out var webhookMode))
+        if (errors.Count == 0 && TryNormalizeWebhookMode(WebhookMode, out var webhookMode))
         {
             WebhookMode = webhookMode;
         }
-        else
-        {
-            errors.Add("WebhookMode 必须是 Realtime、Summary 或 All");
-        }
 
         return errors.Count == 0;
+    }
+
+    public IReadOnlyList<string> GetInvalidFields()
+    {
+        var fields = new List<string>();
+
+        if (string.IsNullOrWhiteSpace(WindowTitle)) fields.Add(nameof(WindowTitle));
+        if (string.IsNullOrWhiteSpace(SearchText)) fields.Add(nameof(SearchText));
+        if (string.IsNullOrWhiteSpace(Language)) fields.Add(nameof(Language));
+
+        if (Retry is < 1 or > 10) fields.Add(nameof(Retry));
+        if (RetryInterval is < 100 or > 60000) fields.Add(nameof(RetryInterval));
+        if (RollingIntervalMs is < 500 or > 60000) fields.Add(nameof(RollingIntervalMs));
+
+        if (string.IsNullOrWhiteSpace(WebhookUrl) || !IsValidHttpUrl(WebhookUrl)) fields.Add(nameof(WebhookUrl));
+        if (string.IsNullOrWhiteSpace(WebhookBody) || !WebhookBody.Contains("__CONTENT__", StringComparison.Ordinal)) fields.Add(nameof(WebhookBody));
+        if (string.IsNullOrWhiteSpace(WebhookContentType)) fields.Add(nameof(WebhookContentType));
+        if (WebhookTimeoutMs is < 1000 or > 60000) fields.Add(nameof(WebhookTimeoutMs));
+        if (WebhookPushCacheSeconds is < 0 or > 86400) fields.Add(nameof(WebhookPushCacheSeconds));
+        if (string.IsNullOrWhiteSpace(WebhookMode) || !TryNormalizeWebhookMode(WebhookMode, out _)) fields.Add(nameof(WebhookMode));
+
+        return fields;
+    }
+
+    public static string GetValidationMessage(string fieldName)
+    {
+        return fieldName switch
+        {
+            nameof(WindowTitle) => "WindowTitle 不能为空",
+            nameof(SearchText) => "SearchText 不能为空",
+            nameof(Language) => "Language 不能为空",
+            nameof(Retry) => "Retry 必须在 1 到 10 之间",
+            nameof(RetryInterval) => "RetryInterval 必须在 100 到 60000 毫秒之间",
+            nameof(RollingIntervalMs) => "RollingIntervalMs 必须在 500 到 60000 毫秒之间",
+            nameof(WebhookUrl) => "WebhookUrl 必须是合法且非空的 http/https URL",
+            nameof(WebhookBody) => "WebhookBody 不能为空且必须包含 __CONTENT__ 占位符",
+            nameof(WebhookContentType) => "WebhookContentType 不能为空",
+            nameof(WebhookTimeoutMs) => "WebhookTimeoutMs 必须在 1000 到 60000 毫秒之间",
+            nameof(WebhookPushCacheSeconds) => "WebhookPushCacheSeconds 必须在 0 到 86400 秒之间，0 表示不启用",
+            nameof(WebhookMode) => "WebhookMode 必须是 Realtime、Summary 或 All",
+            nameof(PartialMatch) => "PartialMatch 必须是布尔值",
+            nameof(SaveScreenshot) => "SaveScreenshot 必须是布尔值",
+            nameof(CaseSensitive) => "CaseSensitive 必须是布尔值",
+            _ => $"{fieldName} 配置无效"
+        };
     }
 
     public static bool TryNormalizeWebhookMode(string? value, out string normalized)

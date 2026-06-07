@@ -12,6 +12,24 @@ internal static class AppRunner
     private const string WebhookBodyTemplateFileName = "webhook-body-template.json";
     private const string WebhookBodyInstructionStart = "----- WEBHOOK BODY INSTRUCTIONS START -----";
     private const string WebhookBodyInstructionEnd = "----- WEBHOOK BODY INSTRUCTIONS END -----";
+    private static readonly string[] ConfigFieldOrder =
+    [
+        nameof(Arguments.WindowTitle),
+        nameof(Arguments.SearchText),
+        nameof(Arguments.PartialMatch),
+        nameof(Arguments.SaveScreenshot),
+        nameof(Arguments.Retry),
+        nameof(Arguments.RetryInterval),
+        nameof(Arguments.RollingIntervalMs),
+        nameof(Arguments.CaseSensitive),
+        nameof(Arguments.Language),
+        nameof(Arguments.WebhookUrl),
+        nameof(Arguments.WebhookBody),
+        nameof(Arguments.WebhookContentType),
+        nameof(Arguments.WebhookTimeoutMs),
+        nameof(Arguments.WebhookMode),
+        nameof(Arguments.WebhookPushCacheSeconds)
+    ];
 
     public static async Task<int> RunAsync()
     {
@@ -470,37 +488,64 @@ internal static class AppRunner
             try
             {
                 var json = File.ReadAllText(configPath, Encoding.UTF8);
-                var config = JsonSerializer.Deserialize<Arguments>(json);
-                if (config == null)
+                using var document = JsonDocument.Parse(json);
+                if (document.RootElement.ValueKind != JsonValueKind.Object)
                 {
                     Logger.Warn("配置文件格式无效, 进入交互式配置...");
                 }
-                else if (config.TryValidate(out var validationErrors))
+                else
                 {
-                    Logger.Info($"已加载配置文件: {configPath}");
-                    PrintSummary(config);
-                    Console.Write("按 Enter 确认并开始执行, 输入 r 重新配置, 输入 q 退出: ");
-                    var key = Console.ReadLine()?.Trim().ToLowerInvariant() ?? "";
+                    var config = ReadConfigFromJson(document.RootElement);
+                    var invalidFields = GetConfigFieldsNeedingRepair(document.RootElement, config);
+                    if (invalidFields.Count > 0)
+                    {
+                        Logger.Warn("配置文件存在缺失项、空值或非法值, 将依次启动对应配置向导...");
+                        foreach (var fieldName in invalidFields)
+                        {
+                            Logger.Warn($"配置错误: {Arguments.GetValidationMessage(fieldName)}");
+                        }
 
-                    if (string.IsNullOrWhiteSpace(key))
+                        if (!RepairConfigFields(config, invalidFields))
+                        {
+                            return null;
+                        }
+
+                        if (!config.TryValidate(out var repairedValidationErrors))
+                        {
+                            foreach (var error in repairedValidationErrors)
+                            {
+                                Logger.Error($"配置错误: {error}");
+                            }
+
+                            return null;
+                        }
+
+                        SaveConfig(configPath, config);
+                    }
+
+                    if (!config.TryValidate(out var validationErrors))
+                    {
+                        foreach (var error in validationErrors)
+                        {
+                            Logger.Error($"配置错误: {error}");
+                        }
+
+                        return null;
+                    }
+
+                    Logger.Info($"已加载配置文件: {configPath}");
+                    var decision = ConfirmLoadedConfig(config);
+                    if (decision == LoadedConfigDecision.Start)
                     {
                         return config;
                     }
 
-                    if (key == "q")
+                    if (decision == LoadedConfigDecision.Exit)
                     {
                         return null;
                     }
 
                     Logger.Info("进入重新配置流程...");
-                }
-                else
-                {
-                    Logger.Warn("配置文件存在空值或非法值, 进入交互式配置...");
-                    foreach (var error in validationErrors)
-                    {
-                        Logger.Warn($"配置错误: {error}");
-                    }
                 }
             }
             catch (Exception ex)
@@ -519,9 +564,36 @@ internal static class AppRunner
             return null;
         }
 
+        SaveConfig(configPath, newConfig);
+        return newConfig;
+    }
+
+    private enum LoadedConfigDecision
+    {
+        Start,
+        Reconfigure,
+        Exit
+    }
+
+    private static LoadedConfigDecision ConfirmLoadedConfig(Arguments config)
+    {
+        PrintSummary(config);
+        Console.Write("按 Enter 确认并开始执行, 输入 r 重新配置, 输入 q 退出: ");
+        var key = Console.ReadLine()?.Trim().ToLowerInvariant() ?? "";
+
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            return LoadedConfigDecision.Start;
+        }
+
+        return key == "q" ? LoadedConfigDecision.Exit : LoadedConfigDecision.Reconfigure;
+    }
+
+    private static void SaveConfig(string configPath, Arguments config)
+    {
         try
         {
-            var json = JsonSerializer.Serialize(newConfig, new JsonSerializerOptions { WriteIndented = true });
+            var json = JsonSerializer.Serialize(config, new JsonSerializerOptions { WriteIndented = true });
             File.WriteAllText(configPath, json, Encoding.UTF8);
             Logger.Info($"配置已保存到: {configPath}");
         }
@@ -529,9 +601,240 @@ internal static class AppRunner
         {
             Logger.Warn($"保存配置文件失败: {ex.Message}");
         }
-
-        return newConfig;
     }
+
+    private static Arguments ReadConfigFromJson(JsonElement root)
+    {
+        var config = new Arguments();
+
+        ReadString(root, nameof(Arguments.WindowTitle), value => config.WindowTitle = value);
+        ReadString(root, nameof(Arguments.SearchText), value => config.SearchText = value);
+        ReadBoolean(root, nameof(Arguments.PartialMatch), value => config.PartialMatch = value);
+        ReadBoolean(root, nameof(Arguments.SaveScreenshot), value => config.SaveScreenshot = value);
+        ReadInteger(root, nameof(Arguments.Retry), value => config.Retry = value);
+        ReadInteger(root, nameof(Arguments.RetryInterval), value => config.RetryInterval = value);
+        ReadInteger(root, nameof(Arguments.RollingIntervalMs), value => config.RollingIntervalMs = value);
+        ReadBoolean(root, nameof(Arguments.CaseSensitive), value => config.CaseSensitive = value);
+        ReadString(root, nameof(Arguments.Language), value => config.Language = value);
+        ReadString(root, nameof(Arguments.WebhookUrl), value => config.WebhookUrl = value);
+        ReadString(root, nameof(Arguments.WebhookBody), value => config.WebhookBody = value);
+        ReadString(root, nameof(Arguments.WebhookContentType), value => config.WebhookContentType = value);
+        ReadInteger(root, nameof(Arguments.WebhookTimeoutMs), value => config.WebhookTimeoutMs = value);
+        ReadString(root, nameof(Arguments.WebhookMode), value => config.WebhookMode = value);
+        ReadInteger(root, nameof(Arguments.WebhookPushCacheSeconds), value => config.WebhookPushCacheSeconds = value);
+
+        return config;
+    }
+
+    private static IReadOnlyList<string> GetConfigFieldsNeedingRepair(JsonElement root, Arguments config)
+    {
+        var invalidFields = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var fieldName in ConfigFieldOrder)
+        {
+            if (IsFieldMissingOrTypeInvalid(root, fieldName))
+            {
+                invalidFields.Add(fieldName);
+            }
+        }
+
+        foreach (var fieldName in config.GetInvalidFields())
+        {
+            invalidFields.Add(fieldName);
+        }
+
+        return ConfigFieldOrder.Where(invalidFields.Contains).ToList();
+    }
+
+    private static bool IsFieldMissingOrTypeInvalid(JsonElement root, string fieldName)
+    {
+        if (!root.TryGetProperty(fieldName, out var property))
+        {
+            return true;
+        }
+
+        return fieldName switch
+        {
+            nameof(Arguments.WindowTitle)
+                or nameof(Arguments.SearchText)
+                or nameof(Arguments.Language)
+                or nameof(Arguments.WebhookUrl)
+                or nameof(Arguments.WebhookBody)
+                or nameof(Arguments.WebhookContentType)
+                or nameof(Arguments.WebhookMode)
+                    => property.ValueKind != JsonValueKind.String,
+
+            nameof(Arguments.PartialMatch)
+                or nameof(Arguments.SaveScreenshot)
+                or nameof(Arguments.CaseSensitive)
+                    => property.ValueKind is not (JsonValueKind.True or JsonValueKind.False),
+
+            nameof(Arguments.Retry)
+                or nameof(Arguments.RetryInterval)
+                or nameof(Arguments.RollingIntervalMs)
+                or nameof(Arguments.WebhookTimeoutMs)
+                or nameof(Arguments.WebhookPushCacheSeconds)
+                    => property.ValueKind != JsonValueKind.Number || !property.TryGetInt32(out _),
+
+            _ => true
+        };
+    }
+
+    private static void ReadString(JsonElement root, string fieldName, Action<string> assign)
+    {
+        if (root.TryGetProperty(fieldName, out var property) && property.ValueKind == JsonValueKind.String)
+        {
+            assign(property.GetString() ?? "");
+        }
+    }
+
+    private static void ReadBoolean(JsonElement root, string fieldName, Action<bool> assign)
+    {
+        if (root.TryGetProperty(fieldName, out var property)
+            && property.ValueKind is JsonValueKind.True or JsonValueKind.False)
+        {
+            assign(property.GetBoolean());
+        }
+    }
+
+    private static void ReadInteger(JsonElement root, string fieldName, Action<int> assign)
+    {
+        if (root.TryGetProperty(fieldName, out var property)
+            && property.ValueKind == JsonValueKind.Number
+            && property.TryGetInt32(out var value))
+        {
+            assign(value);
+        }
+    }
+
+    private static bool RepairConfigFields(Arguments config, IReadOnlyList<string> fieldNames)
+    {
+        foreach (var fieldName in fieldNames)
+        {
+            Logger.Info($"正在配置: {fieldName}");
+            if (!RepairConfigField(config, fieldName))
+            {
+                Logger.Info("用户取消配置, 程序退出");
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool RepairConfigField(Arguments config, string fieldName)
+    {
+        switch (fieldName)
+        {
+            case nameof(Arguments.WindowTitle):
+                if (!TryAskRequiredString("请输入窗口标题 (必填, 输入 q 退出): ", config.WindowTitle, out var windowTitle))
+                {
+                    return false;
+                }
+
+                config.WindowTitle = windowTitle;
+                return true;
+
+            case nameof(Arguments.SearchText):
+                if (!TryAskRequiredString("请输入要查找的文本 (必填, 输入 q 退出): ", config.SearchText, out var searchText))
+                {
+                    return false;
+                }
+
+                config.SearchText = searchText;
+                return true;
+
+            case nameof(Arguments.PartialMatch):
+                config.PartialMatch = AskYesNo("是否使用模糊匹配? (y/n, 默认: n 精确匹配): ", config.PartialMatch);
+                return true;
+
+            case nameof(Arguments.SaveScreenshot):
+                config.SaveScreenshot = AskYesNo("是否保存截图用于调试? (y/n, 默认: n): ", config.SaveScreenshot);
+                return true;
+
+            case nameof(Arguments.Retry):
+                config.Retry = AskInteger("请输入重试次数 (1-10, 默认: 1): ", GetIntegerDefault(config.Retry, 1, 1, 10), 1, 10);
+                return true;
+
+            case nameof(Arguments.RetryInterval):
+                config.RetryInterval = AskInteger("请输入重试间隔/毫秒 (100-60000, 默认: 1000): ", GetIntegerDefault(config.RetryInterval, 1000, 100, 60000), 100, 60000);
+                return true;
+
+            case nameof(Arguments.RollingIntervalMs):
+                config.RollingIntervalMs = AskInteger("请输入滚动识别间隔/毫秒 (500-60000, 默认: 3000): ", GetIntegerDefault(config.RollingIntervalMs, 3000, 500, 60000), 500, 60000);
+                return true;
+
+            case nameof(Arguments.CaseSensitive):
+                config.CaseSensitive = AskYesNo("是否区分大小写? (y/n, 默认: n 不区分): ", config.CaseSensitive);
+                return true;
+
+            case nameof(Arguments.Language):
+                var languageDefault = GetRequiredStringDefault(config.Language, "zh-Hans");
+                if (!TryAskRequiredString($"请输入 OCR 语言标签 (默认: {languageDefault}): ", languageDefault, out var language))
+                {
+                    return false;
+                }
+
+                config.Language = language;
+                return true;
+
+            case nameof(Arguments.WebhookUrl):
+                config.WebhookUrl = AskWebhookUrl(config.WebhookUrl);
+                return true;
+
+            case nameof(Arguments.WebhookBody):
+                config.WebhookBody = AskWebhookBody(config.WebhookBody);
+                return true;
+
+            case nameof(Arguments.WebhookContentType):
+                config.WebhookContentType = AskRequiredString($"请输入 Webhook Content-Type (默认: {GetRequiredStringDefault(config.WebhookContentType, "application/json")}): ", GetRequiredStringDefault(config.WebhookContentType, "application/json"));
+                return true;
+
+            case nameof(Arguments.WebhookTimeoutMs):
+                config.WebhookTimeoutMs = AskInteger("请输入 Webhook 超时/毫秒 (1000-60000, 默认: 5000): ", GetIntegerDefault(config.WebhookTimeoutMs, 5000, 1000, 60000), 1000, 60000);
+                return true;
+
+            case nameof(Arguments.WebhookMode):
+                config.WebhookMode = AskWebhookMode();
+                return true;
+
+            case nameof(Arguments.WebhookPushCacheSeconds):
+                config.WebhookPushCacheSeconds = AskInteger("请输入 Webhook 推送缓存时间/秒 (0-86400, 0=不启用, 默认: 0): ", GetIntegerDefault(config.WebhookPushCacheSeconds, 0, 0, 86400), 0, 86400);
+                return true;
+
+            default:
+                Logger.Warn($"未知配置项: {fieldName}");
+                return true;
+        }
+    }
+
+    private static bool TryAskRequiredString(string prompt, string defaultValue, out string value)
+    {
+        while (true)
+        {
+            Console.Write(prompt);
+            var input = Console.ReadLine()?.Trim() ?? "";
+            if (input.Equals("q", StringComparison.OrdinalIgnoreCase))
+            {
+                value = defaultValue;
+                return false;
+            }
+
+            value = string.IsNullOrWhiteSpace(input) ? defaultValue : input;
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return true;
+            }
+
+            Logger.Warn("输入无效, 该配置不能为空");
+        }
+    }
+
+    private static int GetIntegerDefault(int value, int fallback, int min, int max)
+        => value >= min && value <= max ? value : fallback;
+
+    private static string GetRequiredStringDefault(string value, string fallback)
+        => string.IsNullOrWhiteSpace(value) ? fallback : value;
 
     private static Arguments? InteractivePrompt()
     {
