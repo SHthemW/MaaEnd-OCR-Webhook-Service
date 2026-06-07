@@ -400,7 +400,7 @@ internal static class AppRunner
             }
 
             var cachedTimeText = BuildCachedTimeText(messages);
-            var cachedContent = string.Join(Environment.NewLine, messages.Select(FormatCachedContentLine));
+            var cachedContent = string.Concat(messages.Select(FormatCachedContentLine));
             await _dispatcher.SendAsync(cachedContent, cachedTimeText, cancellationToken);
         }
 
