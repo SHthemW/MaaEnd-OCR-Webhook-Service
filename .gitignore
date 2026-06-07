@@ -18,9 +18,6 @@ publish/
 # 截图输出
 screenshots/
 
-# 用户配置文件（含窗口标题等本地信息）
-config.json
-
 # 系统文件
 Thumbs.db
 Desktop.ini

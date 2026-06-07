@@ -21,4 +21,12 @@
     <PackageReference Include="System.Drawing.Common" Version="8.0.*" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Remove="config.json" />
+    <Content Include="config.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>Always</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
+
 </Project>

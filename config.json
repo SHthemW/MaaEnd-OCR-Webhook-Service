@@ -1,0 +1,17 @@
+{
+  "WindowTitle": "MaaEnd",
+  "SearchText": "运行日志",
+  "PartialMatch": false,
+  "SaveScreenshot": false,
+  "Retry": 5,
+  "RetryInterval": 1000,
+  "RollingIntervalMs": 3000,
+  "CaseSensitive": false,
+  "Language": "zh-Hans",
+  "WebhookUrl": "",
+  "WebhookBody": "",
+  "WebhookContentType": "application/json",
+  "WebhookTimeoutMs": 5000,
+  "WebhookMode": "Realtime",
+  "WebhookPushCacheSeconds": 0
+}

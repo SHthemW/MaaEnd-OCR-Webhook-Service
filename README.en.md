@@ -27,27 +27,22 @@ Compared with [MaaEnd-Webhook-Retransmitter](https://github.com/SHthemW/MaaEnd-W
 
 ## Quick Start
 
-1. Run `MaaEnd-Log-Retransmitter.exe`.
-2. On first launch, complete the interactive configuration wizard.
-3. The program finds the target window, runs initial OCR, and locates `SearchText`.
-4. After the anchor is found, it enters rolling OCR mode.
-5. New log lines are printed to the console and pushed according to `WebhookMode`.
-6. Press `Ctrl+C` to stop rolling recognition. Pending cached pushes are flushed before exit.
+1. Download and extract the release package.
+2. Run `MaaEnd-Log-Retransmitter.exe`.
+3. On first launch, you usually only need to fill in two Webhook fields:
+   - `WebhookUrl`
+   - `WebhookBody`
+4. After saving, the program starts reading MaaEnd logs and pushing them.
+5. Press `Ctrl+C` to stop rolling recognition. Pending cached pushes are flushed before exit.
 
-On later launches, the program automatically checks `config.json`. If the configuration is complete and valid, it starts immediately. If a key is missing, empty, or invalid, only the affected fields are repaired through the wizard.
+The release package includes a default `config.json`. By default, it looks for a window whose title contains `MaaEnd`, then starts OCR below `运行日志`. On later launches, the program checks the configuration automatically. If it is complete and valid, it starts immediately without confirmation.
 
-## Setup Wizard
+## First-Time Setup
 
-When the program runs for the first time, or when the configuration is invalid, it starts the setup wizard. Common fields:
+The default configuration covers most MaaEnd use cases. For first-time use, focus on these two fields:
 
-- Window title: the title of the target application window.
-- Search text: anchor text used to locate the log area.
-- Match mode: the program prefers exact title matches; short input such as `MaaEnd` can also match a full title like `MaaEnd v2.13.0`.
-- OCR language: usually `zh-Hans`.
-- Webhook URL: HTTP/HTTPS endpoint that receives log pushes.
-- Webhook body: request body template. It must contain `__CONTENT__`.
-- Webhook mode: realtime push, summary push, or both.
-- Webhook push cache time: seconds. `0` disables caching.
+- `WebhookUrl`: HTTP/HTTPS endpoint that receives log pushes.
+- `WebhookBody`: request body template. It must contain `__CONTENT__`.
 
 Webhook bodies are often multi-line JSON. When configuring this field, the program opens `webhook-body-template.json` in Notepad. Edit the template, save it, close Notepad, and the CLI will continue.
 
@@ -59,7 +54,27 @@ Example body:
 }
 ```
 
-## Configuration
+If you use WeCom, Discord, Slack, or another Webhook service, these two fields are usually the only required changes.
+
+## Default Behavior
+
+- Target window: a window whose title contains `MaaEnd`, such as `MaaEnd v2.13.0`.
+- Anchor text: `运行日志`.
+- Push mode: `Realtime`; new logs are pushed as they are detected.
+- OCR language: `zh-Hans`.
+- Push cache: disabled by default.
+- Screenshot saving: disabled by default.
+
+## Common Options
+
+- Window title: the title of the target application window.
+- Search text: anchor text used to locate the log area.
+- Match mode: the program prefers exact title matches; short input such as `MaaEnd` can also match a full title like `MaaEnd v2.13.0`.
+- Webhook mode: realtime push, summary push, or both.
+- Webhook push cache time: seconds. `0` disables caching.
+- Save screenshots: only enable this when troubleshooting OCR or screenshot issues.
+
+## Full Configuration Reference
 
 `config.json` is located next to the executable and uses standard JSON. Important fields:
 
