@@ -32,7 +32,7 @@ internal static class WindowFinder
 
     public static WindowInfo? FindWindow(string title, bool partialMatch)
     {
-        var results = new List<WindowInfo>();
+        var results = new List<(WindowInfo Window, bool ExactMatch)>();
 
         EnumWindows((hWnd, _) =>
         {
@@ -47,27 +47,45 @@ internal static class WindowFinder
 
             if (GetWindow(hWnd, GW_OWNER) != IntPtr.Zero) return true;
 
-            bool matched = partialMatch
-                ? windowTitle.Contains(title, StringComparison.OrdinalIgnoreCase)
-                : windowTitle.Equals(title, StringComparison.OrdinalIgnoreCase);
+            var exactMatch = GetTitleMatch(windowTitle, title, partialMatch);
 
-            if (matched && GetWindowRect(hWnd, out var rect))
+            if (exactMatch != null && GetWindowRect(hWnd, out var rect))
             {
-                results.Add(new WindowInfo
-                {
-                    Handle = hWnd,
-                    Title = windowTitle,
-                    Rect = rect
-                });
+                results.Add((
+                    new WindowInfo
+                    {
+                        Handle = hWnd,
+                        Title = windowTitle,
+                        Rect = rect
+                    },
+                    exactMatch.Value));
             }
 
             return true;
         }, IntPtr.Zero);
 
         return results
-            .OrderBy(window => IsIconic(window.Handle) ? 1 : 0)
-            .ThenByDescending(window => window.Width * window.Height)
+            .OrderBy(match => match.ExactMatch ? 0 : 1)
+            .ThenBy(match => IsIconic(match.Window.Handle) ? 1 : 0)
+            .ThenByDescending(match => match.Window.Width * match.Window.Height)
+            .Select(match => match.Window)
             .FirstOrDefault();
+    }
+
+    private static bool? GetTitleMatch(string windowTitle, string title, bool partialMatch)
+    {
+        if (windowTitle.Equals(title, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if ((partialMatch || title.Length < windowTitle.Length)
+            && windowTitle.Contains(title, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return null;
     }
 
     [StructLayout(LayoutKind.Sequential)]

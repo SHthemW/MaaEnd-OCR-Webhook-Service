@@ -42,7 +42,7 @@ When the program runs for the first time, or when the configuration is invalid, 
 
 - Window title: the title of the target application window.
 - Search text: anchor text used to locate the log area.
-- Match mode: whether partial window title matching is allowed.
+- Match mode: the program prefers exact title matches; short input such as `MaaEnd` can also match a full title like `MaaEnd v2.13.0`.
 - OCR language: usually `zh-Hans`.
 - Webhook URL: HTTP/HTTPS endpoint that receives log pushes.
 - Webhook body: request body template. It must contain `__CONTENT__`.
@@ -67,7 +67,7 @@ Example body:
 | --- | --- | --- |
 | `WindowTitle` | Target window title | Non-empty string |
 | `SearchText` | Anchor text; rolling OCR starts below it | Non-empty string |
-| `PartialMatch` | Use partial window title matching | `true` / `false` |
+| `PartialMatch` | Force partial window title matching; even when `false`, short titles can still fall back to containment matching | `true` / `false` |
 | `SaveScreenshot` | Save screenshots and OCR preprocessing images | `true` / `false` |
 | `Retry` | Initial OCR retry count | `1` to `10` |
 | `RetryInterval` | Initial OCR retry interval in milliseconds | `100` to `60000` |
@@ -94,7 +94,7 @@ Critical logs are never merged into the cache. When a log contains `任务` or `
 ## Usage Tips
 
 - Choose `SearchText` from stable text that appears above the log area.
-- Enable `PartialMatch` if the target window title changes.
+- `WindowTitle` can be a full title or a stable short title such as `MaaEnd`.
 - If OCR cannot find the anchor text, enable `SaveScreenshot` and inspect the saved screenshots and preprocessing images.
 - If the Webhook platform expects JSON, set `WebhookContentType` to `application/json` and make sure `WebhookBody` is valid JSON.
 - If pushes are too frequent, set `WebhookPushCacheSeconds`, such as `10` or `30`.
