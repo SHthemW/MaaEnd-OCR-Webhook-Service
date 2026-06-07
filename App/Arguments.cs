@@ -15,7 +15,7 @@ internal sealed class Arguments
     public string WebhookBody { get; set; } = "{\"content\":\"__CONTENT__\"}";
     public string WebhookContentType { get; set; } = "application/json";
     public int WebhookTimeoutMs { get; set; } = 5000;
-    public string WebhookMode { get; set; } = SummaryWebhookMode;
+    public string WebhookMode { get; set; } = RealtimeWebhookMode;
 
     private const string RealtimeWebhookMode = "Realtime";
     private const string SummaryWebhookMode = "Summary";
@@ -88,7 +88,7 @@ internal sealed class Arguments
 
     public static bool TryNormalizeWebhookMode(string? value, out string normalized)
     {
-        normalized = SummaryWebhookMode;
+        normalized = RealtimeWebhookMode;
         if (string.IsNullOrWhiteSpace(value)) return true;
 
         var text = value.Trim();

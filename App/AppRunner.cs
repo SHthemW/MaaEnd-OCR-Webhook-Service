@@ -662,9 +662,9 @@ internal static class AppRunner
     {
         while (true)
         {
-            Console.Write("请选择 Webhook 推送方式 (1=仅实时, 2=仅总结, 3=全部, 默认: 2): ");
+            Console.Write("请选择 Webhook 推送方式 (1=仅实时, 2=仅总结, 3=全部, 默认: 1): ");
             var input = Console.ReadLine()?.Trim() ?? "";
-            if (string.IsNullOrWhiteSpace(input)) return "Summary";
+            if (string.IsNullOrWhiteSpace(input)) return "Realtime";
 
             var mode = input switch
             {
