@@ -24,6 +24,7 @@ internal sealed class Arguments
 
     public bool ShouldPushRealtime => WebhookMode == RealtimeWebhookMode || WebhookMode == AllWebhookMode;
     public bool ShouldPushSummary => WebhookMode == SummaryWebhookMode || WebhookMode == AllWebhookMode;
+    public bool HasWebhookUrl => IsValidHttpUrl(WebhookUrl);
 
     public string WebhookModeDisplay => WebhookMode switch
     {
@@ -39,8 +40,11 @@ internal sealed class Arguments
     }
 
     public bool TryValidate(out List<string> errors)
+        => TryValidate(allowEmptyWebhook: false, out errors);
+
+    public bool TryValidate(bool allowEmptyWebhook, out List<string> errors)
     {
-        var invalidFields = GetInvalidFields();
+        var invalidFields = GetInvalidFields(allowEmptyWebhook);
         errors = invalidFields.Select(GetValidationMessage).ToList();
 
         if (errors.Count == 0 && TryNormalizeWebhookMode(WebhookMode, out var webhookMode))
@@ -52,6 +56,9 @@ internal sealed class Arguments
     }
 
     public IReadOnlyList<string> GetInvalidFields()
+        => GetInvalidFields(allowEmptyWebhook: false);
+
+    public IReadOnlyList<string> GetInvalidFields(bool allowEmptyWebhook)
     {
         var fields = new List<string>();
 
@@ -63,12 +70,17 @@ internal sealed class Arguments
         if (RetryInterval is < 100 or > 60000) fields.Add(nameof(RetryInterval));
         if (RollingIntervalMs is < 500 or > 60000) fields.Add(nameof(RollingIntervalMs));
 
-        if (string.IsNullOrWhiteSpace(WebhookUrl) || !IsValidHttpUrl(WebhookUrl)) fields.Add(nameof(WebhookUrl));
-        if (string.IsNullOrWhiteSpace(WebhookBody) || !WebhookBody.Contains("__CONTENT__", StringComparison.Ordinal)) fields.Add(nameof(WebhookBody));
-        if (string.IsNullOrWhiteSpace(WebhookContentType)) fields.Add(nameof(WebhookContentType));
-        if (WebhookTimeoutMs is < 1000 or > 60000) fields.Add(nameof(WebhookTimeoutMs));
-        if (WebhookPushCacheSeconds is < 0 or > 86400) fields.Add(nameof(WebhookPushCacheSeconds));
-        if (string.IsNullOrWhiteSpace(WebhookMode) || !TryNormalizeWebhookMode(WebhookMode, out _)) fields.Add(nameof(WebhookMode));
+        var webhookUrlIsEmpty = string.IsNullOrWhiteSpace(WebhookUrl);
+        var webhookDisabled = allowEmptyWebhook && webhookUrlIsEmpty;
+        if (!webhookDisabled)
+        {
+            if (webhookUrlIsEmpty || !IsValidHttpUrl(WebhookUrl)) fields.Add(nameof(WebhookUrl));
+            if (string.IsNullOrWhiteSpace(WebhookBody) || !WebhookBody.Contains("__CONTENT__", StringComparison.Ordinal)) fields.Add(nameof(WebhookBody));
+            if (string.IsNullOrWhiteSpace(WebhookContentType)) fields.Add(nameof(WebhookContentType));
+            if (WebhookTimeoutMs is < 1000 or > 60000) fields.Add(nameof(WebhookTimeoutMs));
+            if (WebhookPushCacheSeconds is < 0 or > 86400) fields.Add(nameof(WebhookPushCacheSeconds));
+            if (string.IsNullOrWhiteSpace(WebhookMode) || !TryNormalizeWebhookMode(WebhookMode, out _)) fields.Add(nameof(WebhookMode));
+        }
 
         return fields;
     }

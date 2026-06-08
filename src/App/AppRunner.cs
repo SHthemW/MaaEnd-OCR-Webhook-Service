@@ -31,22 +31,22 @@ internal static class AppRunner
         nameof(Arguments.WebhookPushCacheSeconds)
     ];
 
-    public static async Task<int> RunAsync()
+    public static async Task<int> RunAsync(RuntimeOptions options)
     {
         PrintBanner();
 
         var configPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "config.json");
-        var argsConfig = LoadOrCreateConfig(configPath);
+        var argsConfig = LoadOrCreateConfig(configPath, options);
         if (argsConfig == null)
         {
             Logger.Info("用户取消, 程序退出");
             return 0;
         }
 
-        return await RunOcrDetectionAsync(argsConfig);
+        return await RunOcrDetectionAsync(argsConfig, options);
     }
 
-    private static async Task<int> RunOcrDetectionAsync(Arguments args)
+    private static async Task<int> RunOcrDetectionAsync(Arguments args, RuntimeOptions options)
     {
         Logger.Info("══════════════════════════════════════");
         Logger.Info("  OCR 窗口文本检测程序 v1.0");
@@ -56,7 +56,9 @@ internal static class AppRunner
         Logger.Info($"OCR 语言: {args.Language}");
         Logger.Info($"重试次数: {args.Retry}, 重试间隔: {args.RetryInterval}ms");
         Logger.Info($"滚动识别间隔: {args.RollingIntervalMs}ms");
-        Logger.Info($"Webhook 推送: 已启用 ({args.WebhookUrl}, {args.WebhookContentType}, 模式 {args.WebhookModeDisplay}, 超时 {args.WebhookTimeoutMs}ms)");
+        Logger.Info(IsWebhookEnabled(args, options)
+            ? $"Webhook 推送: 已启用 ({args.WebhookUrl}, {args.WebhookContentType}, 模式 {args.WebhookModeDisplay}, 超时 {args.WebhookTimeoutMs}ms)"
+            : "Webhook 推送: 已禁用");
 
         for (int attempt = 1; attempt <= args.Retry; attempt++)
         {
@@ -180,19 +182,20 @@ internal static class AppRunner
             }
 
             screenshot.Dispose();
-            return await RunRollingRecognitionAsync(window, args, cropRect, attempt);
+            return await RunRollingRecognitionAsync(window, args, options, cropRect, attempt);
         }
 
         Logger.Error("已达到最大重试次数, 文本未找到");
         return 3;
     }
 
-    private static async Task<int> RunRollingRecognitionAsync(WindowInfo window, Arguments args, Rectangle cropRect, int attempt)
+    private static async Task<int> RunRollingRecognitionAsync(WindowInfo window, Arguments args, RuntimeOptions options, Rectangle cropRect, int attempt)
     {
         var outputFilter = new RollingOcrOutputFilter();
         var bufferedLines = new List<OcrEngine.OcrLineInfo>();
         var webhookDispatcher = new WebhookDispatcher(args);
         var realtimeWebhookCache = new RealtimeWebhookPushCache(webhookDispatcher, args.WebhookPushCacheSeconds);
+        var webhookEnabled = IsWebhookEnabled(args, options);
         using var cancellation = new CancellationTokenSource();
         ConsoleCancelEventHandler? handler = (_, e) =>
         {
@@ -232,15 +235,12 @@ internal static class AppRunner
                         }
 
                         Logger.Debug($"正在执行滚动 OCR (第 {round} 次, 语言: {args.Language})...");
-                        var sw = Stopwatch.StartNew();
-                        var detailedResult = await OcrEngine.RecognizeWithWordsAsync(
+                        var optimizedResult = await OcrRecognitionOptimizer.RecognizeRollingAsync(
                             croppedBitmap,
                             args.Language,
-                            upscale: 8,
-                            preprocessMode: OcrEngine.OcrPreprocessMode.DetailPreserving,
-                            saveDebugImages: args.SaveScreenshot);
-                        sw.Stop();
-                        Logger.Debug($"滚动 OCR 第 {round} 次完成, 耗时 {sw.ElapsedMilliseconds}ms, 识别到 {detailedResult.Text.Length} 个字符");
+                            args.SaveScreenshot);
+                        var detailedResult = optimizedResult.Result;
+                        Logger.Debug($"滚动 OCR 第 {round} 次完成, 候选 {optimizedResult.Spec.Name}, 分数 {optimizedResult.Score.Value}, 耗时 {optimizedResult.ElapsedMilliseconds}ms, 识别到 {detailedResult.Text.Length} 个字符");
                         Logger.InfoLight($"滚动 OCR 第 {round} 次原文:\n--- OCR 开始 ---\n{FormatOcrTextForLog(detailedResult.Text)}\n--- OCR 结束 ---");
 
                         var filterResult = outputFilter.Filter(detailedResult.Lines);
@@ -254,7 +254,7 @@ internal static class AppRunner
                         {
                             bufferedLines.Add(line.Source);
                             Logger.Info(FormatRollingOcrEvent(line));
-                            if (args.ShouldPushRealtime)
+                            if (webhookEnabled && args.ShouldPushRealtime)
                             {
                                 var webhookMessage = WebhookMessage.FromOcrLine(line.Source);
                                 if (!string.IsNullOrWhiteSpace(webhookMessage.Content))
@@ -291,13 +291,13 @@ internal static class AppRunner
             }
 
             Logger.Info("滚动识别已停止。");
-            if (args.ShouldPushRealtime)
+            if (webhookEnabled && args.ShouldPushRealtime)
             {
                 await realtimeWebhookCache.FlushAsync(CancellationToken.None);
             }
 
             PrintBufferedRollingOcrEvents(bufferedLines);
-            if (args.ShouldPushSummary)
+            if (webhookEnabled && args.ShouldPushSummary)
             {
                 await DispatchBufferedRollingOcrEventsAsync(bufferedLines, webhookDispatcher);
             }
@@ -492,7 +492,7 @@ internal static class AppRunner
 ");
     }
 
-    private static Arguments? LoadOrCreateConfig(string configPath)
+    private static Arguments? LoadOrCreateConfig(string configPath, RuntimeOptions options)
     {
         if (File.Exists(configPath))
         {
@@ -507,7 +507,7 @@ internal static class AppRunner
                 else
                 {
                     var config = ReadConfigFromJson(document.RootElement);
-                    var invalidFields = GetConfigFieldsNeedingRepair(document.RootElement, config);
+                    var invalidFields = GetConfigFieldsNeedingRepair(document.RootElement, config, options);
                     if (invalidFields.Count > 0)
                     {
                         Logger.Warn("配置文件存在缺失项、空值或非法值, 将依次启动对应配置向导...");
@@ -521,7 +521,7 @@ internal static class AppRunner
                             return null;
                         }
 
-                        if (!config.TryValidate(out var repairedValidationErrors))
+                        if (!config.TryValidate(AllowEmptyWebhook(options), out var repairedValidationErrors))
                         {
                             foreach (var error in repairedValidationErrors)
                             {
@@ -534,7 +534,7 @@ internal static class AppRunner
                         SaveConfig(configPath, config);
                     }
 
-                    if (!config.TryValidate(out var validationErrors))
+                    if (!config.TryValidate(AllowEmptyWebhook(options), out var validationErrors))
                     {
                         foreach (var error in validationErrors)
                         {
@@ -605,19 +605,19 @@ internal static class AppRunner
         return config;
     }
 
-    private static IReadOnlyList<string> GetConfigFieldsNeedingRepair(JsonElement root, Arguments config)
+    private static IReadOnlyList<string> GetConfigFieldsNeedingRepair(JsonElement root, Arguments config, RuntimeOptions options)
     {
         var invalidFields = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (var fieldName in ConfigFieldOrder)
         {
-            if (IsFieldMissingOrTypeInvalid(root, fieldName))
+            if (IsFieldMissingOrTypeInvalid(root, fieldName, config, options))
             {
                 invalidFields.Add(fieldName);
             }
         }
 
-        foreach (var fieldName in config.GetInvalidFields())
+        foreach (var fieldName in config.GetInvalidFields(AllowEmptyWebhook(options)))
         {
             invalidFields.Add(fieldName);
         }
@@ -625,10 +625,21 @@ internal static class AppRunner
         return ConfigFieldOrder.Where(invalidFields.Contains).ToList();
     }
 
-    private static bool IsFieldMissingOrTypeInvalid(JsonElement root, string fieldName)
+    private static bool IsWebhookEnabled(Arguments args, RuntimeOptions options)
+        => !(options.Debug && string.IsNullOrWhiteSpace(args.WebhookUrl)) && args.HasWebhookUrl;
+
+    private static bool AllowEmptyWebhook(RuntimeOptions options)
+        => options.Debug;
+
+    private static bool IsFieldMissingOrTypeInvalid(JsonElement root, string fieldName, Arguments config, RuntimeOptions options)
     {
         if (!root.TryGetProperty(fieldName, out var property))
         {
+            if (AllowEmptyWebhook(options) && string.IsNullOrWhiteSpace(config.WebhookUrl) && IsWebhookConfigField(fieldName))
+            {
+                return false;
+            }
+
             return true;
         }
 
@@ -658,6 +669,14 @@ internal static class AppRunner
             _ => true
         };
     }
+
+    private static bool IsWebhookConfigField(string fieldName)
+        => fieldName is nameof(Arguments.WebhookUrl)
+            or nameof(Arguments.WebhookBody)
+            or nameof(Arguments.WebhookContentType)
+            or nameof(Arguments.WebhookTimeoutMs)
+            or nameof(Arguments.WebhookMode)
+            or nameof(Arguments.WebhookPushCacheSeconds);
 
     private static void ReadString(JsonElement root, string fieldName, Action<string> assign)
     {

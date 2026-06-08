@@ -8,7 +8,9 @@ DpiAwareness.Enable();
 
 try
 {
-    return await AppRunner.RunAsync();
+    var options = RuntimeOptions.Parse(args);
+    Logger.SetDebugEnabled(options.Debug);
+    return await AppRunner.RunAsync(options);
 }
 catch (Exception ex)
 {

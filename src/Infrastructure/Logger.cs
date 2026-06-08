@@ -10,7 +10,7 @@ internal static class Logger
         Error = 3
     }
 
-    private static readonly LogLevel MinimumLevel = LogLevel.Info;
+    private static LogLevel _minimumLevel = LogLevel.Info;
 
     public static void Info(string message) => Log("INFO", message, ConsoleColor.Gray);
     public static void InfoLight(string message) => Log("INFO", message, ConsoleColor.DarkGray);
@@ -32,7 +32,12 @@ internal static class Logger
         Console.ResetColor();
     }
 
-    private static bool ShouldLog(string level) => ParseLevel(level) >= MinimumLevel;
+    public static void SetDebugEnabled(bool enabled)
+    {
+        _minimumLevel = enabled ? LogLevel.Debug : LogLevel.Info;
+    }
+
+    private static bool ShouldLog(string level) => ParseLevel(level) >= _minimumLevel;
 
     private static LogLevel ParseLevel(string level) => level switch
     {
