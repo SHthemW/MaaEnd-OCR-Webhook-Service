@@ -5,7 +5,6 @@ internal sealed class Arguments
     public string WindowTitle { get; set; } = "";
     public string SearchText { get; set; } = "";
     public bool PartialMatch { get; set; }
-    public bool SaveScreenshot { get; set; }
     public int Retry { get; set; } = 1;
     public int RetryInterval { get; set; } = 1000;
     public int RollingIntervalMs { get; set; } = 3000;
@@ -102,7 +101,6 @@ internal sealed class Arguments
             nameof(WebhookPushCacheSeconds) => "WebhookPushCacheSeconds 必须在 0 到 86400 秒之间，0 表示不启用",
             nameof(WebhookMode) => "WebhookMode 必须是 Realtime、Summary 或 All",
             nameof(PartialMatch) => "PartialMatch 必须是布尔值",
-            nameof(SaveScreenshot) => "SaveScreenshot 必须是布尔值",
             nameof(CaseSensitive) => "CaseSensitive 必须是布尔值",
             _ => $"{fieldName} 配置无效"
         };

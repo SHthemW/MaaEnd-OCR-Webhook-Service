@@ -17,7 +17,6 @@ internal static class AppRunner
         nameof(Arguments.WindowTitle),
         nameof(Arguments.SearchText),
         nameof(Arguments.PartialMatch),
-        nameof(Arguments.SaveScreenshot),
         nameof(Arguments.Retry),
         nameof(Arguments.RetryInterval),
         nameof(Arguments.RollingIntervalMs),
@@ -83,7 +82,7 @@ internal static class AppRunner
                 screenshot = ScreenCapture.CaptureWindow(window);
                 Logger.Info($"截图成功: {screenshot.Width}x{screenshot.Height}");
 
-                if (args.SaveScreenshot)
+                if (options.Debug)
                 {
                     var screenshotPath = ScreenCapture.SaveScreenshot(screenshot, args.WindowTitle, attempt);
                     Logger.Info($"截图已保存: {screenshotPath}");
@@ -113,7 +112,7 @@ internal static class AppRunner
                     args.Language,
                     upscale: 4,
                     preprocessMode: OcrEngine.OcrPreprocessMode.HighContrastBinary,
-                    saveDebugImages: args.SaveScreenshot);
+                    saveDebugImages: options.Debug);
                 sw.Stop();
                 Logger.Info($"第一次 OCR 完成, 耗时 {sw.ElapsedMilliseconds}ms, 识别到 {firstResult.Text.Length} 个字符");
 
@@ -174,7 +173,7 @@ internal static class AppRunner
                 Math.Max(1, screenshot.Height - matchRect.Value.Bottom));
             Logger.Info($"滚动 OCR 裁剪矩形: ({cropRect.X}, {cropRect.Y}) → ({cropRect.X + cropRect.Width}, {cropRect.Y + cropRect.Height}), 尺寸: {cropRect.Width}x{cropRect.Height}");
 
-            if (args.SaveScreenshot)
+            if (options.Debug)
             {
                 using var cropCopy = screenshot.Clone(cropRect, screenshot.PixelFormat);
                 var path = ScreenCapture.SaveScreenshot(cropCopy, args.WindowTitle + "_crop", attempt);
@@ -228,7 +227,7 @@ internal static class AppRunner
                     else
                     {
                         using var croppedBitmap = screenshot.Clone(effectiveCropRect, screenshot.PixelFormat);
-                        if (args.SaveScreenshot)
+                        if (options.Debug)
                         {
                             var path = ScreenCapture.SaveScreenshot(croppedBitmap, args.WindowTitle + "_rolling_crop", attempt * 100000 + round);
                             Logger.Debug($"滚动裁剪截图已保存: {path}");
@@ -238,7 +237,7 @@ internal static class AppRunner
                         var optimizedResult = await OcrRecognitionOptimizer.RecognizeRollingAsync(
                             croppedBitmap,
                             args.Language,
-                            args.SaveScreenshot);
+                            options.Debug);
                         var detailedResult = optimizedResult.Result;
                         Logger.Debug($"滚动 OCR 第 {round} 次完成, 候选 {optimizedResult.Spec.Name}, 分数 {optimizedResult.Score.Value}, 耗时 {optimizedResult.ElapsedMilliseconds}ms, 识别到 {detailedResult.Text.Length} 个字符");
                         Logger.InfoLight($"滚动 OCR 第 {round} 次原文:\n--- OCR 开始 ---\n{FormatOcrTextForLog(detailedResult.Text)}\n--- OCR 结束 ---");
@@ -589,7 +588,6 @@ internal static class AppRunner
         ReadString(root, nameof(Arguments.WindowTitle), value => config.WindowTitle = value);
         ReadString(root, nameof(Arguments.SearchText), value => config.SearchText = value);
         ReadBoolean(root, nameof(Arguments.PartialMatch), value => config.PartialMatch = value);
-        ReadBoolean(root, nameof(Arguments.SaveScreenshot), value => config.SaveScreenshot = value);
         ReadInteger(root, nameof(Arguments.Retry), value => config.Retry = value);
         ReadInteger(root, nameof(Arguments.RetryInterval), value => config.RetryInterval = value);
         ReadInteger(root, nameof(Arguments.RollingIntervalMs), value => config.RollingIntervalMs = value);
@@ -655,7 +653,6 @@ internal static class AppRunner
                     => property.ValueKind != JsonValueKind.String,
 
             nameof(Arguments.PartialMatch)
-                or nameof(Arguments.SaveScreenshot)
                 or nameof(Arguments.CaseSensitive)
                     => property.ValueKind is not (JsonValueKind.True or JsonValueKind.False),
 
@@ -744,10 +741,6 @@ internal static class AppRunner
 
             case nameof(Arguments.PartialMatch):
                 config.PartialMatch = AskYesNo("是否使用模糊匹配? (y/n, 默认: n 精确匹配): ", config.PartialMatch);
-                return true;
-
-            case nameof(Arguments.SaveScreenshot):
-                config.SaveScreenshot = AskYesNo("是否保存截图用于调试? (y/n, 默认: n): ", config.SaveScreenshot);
                 return true;
 
             case nameof(Arguments.Retry):
@@ -860,7 +853,6 @@ internal static class AppRunner
         config.Retry = AskInteger("请输入重试次数 (1-10, 默认: 1): ", 1, 1, 10);
         config.RetryInterval = AskInteger("请输入重试间隔/毫秒 (100-60000, 默认: 1000): ", 1000, 100, 60000);
         config.RollingIntervalMs = AskInteger("请输入滚动识别间隔/毫秒 (500-60000, 默认: 3000): ", 3000, 500, 60000);
-        config.SaveScreenshot = AskYesNo("是否保存截图用于调试? (y/n, 默认: n): ", false);
         config.WebhookUrl = AskWebhookUrl(config.WebhookUrl);
 
         config.WebhookBody = AskWebhookBody(config.WebhookBody);
@@ -1118,7 +1110,6 @@ internal static class AppRunner
         Console.WriteLine($"  重试次数:     {config.Retry}");
         Console.WriteLine($"  重试间隔:     {config.RetryInterval}ms");
         Console.WriteLine($"  滚动间隔:     {config.RollingIntervalMs}ms");
-        Console.WriteLine($"  保存截图:     {(config.SaveScreenshot ? "是" : "否")}");
         Console.WriteLine("  Webhook:      启用");
         Console.WriteLine($"  Webhook URL:  {config.WebhookUrl}");
         Console.WriteLine($"  Content-Type: {config.WebhookContentType}");
